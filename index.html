@@ -424,26 +424,26 @@
 
       try {
         const keyword = document.getElementById("targetKeywords").value.trim();
-        const found = await TripSearchEngine.fetchRandomTarget(mainMap, luckyMode, secFilter, keyword);
+       const found = await TripSearchEngine.fetchRandomTarget(mainMap, luckyMode, secFilter, keyword);
 
-// Handle rate limit (the new 45-second protection)
 if (found && found.rateLimited) {
   showPlainMessage("Please wait", found.message);
-
   let left = found.waitSeconds;
   goBtn.disabled = true;
   goBtn.textContent = `Wait ${left}s…`;
-
   const timer = setInterval(() => {
     left--;
-    if (left > 0) {
-      goBtn.textContent = `Wait ${left}s…`;
-    } else {
+    goBtn.textContent = left > 0 ? `Wait ${left}s…` : "I’m Feeling Lucky";
+    if (left <= 0) {
       clearInterval(timer);
       goBtn.disabled = false;
-      goBtn.textContent = "I’m Feeling Lucky";
     }
   }, 1000);
+  return;
+}
+
+if (!found) {
+  showPlainMessage("No luck this time", "Something went wrong.");
   return;
 }
 
