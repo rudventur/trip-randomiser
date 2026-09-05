@@ -78,6 +78,10 @@
     }
     #go:hover { filter: brightness(1.07); }
     #go:disabled { opacity: 0.65; cursor: wait; filter: none; }
+    #searchStatus {
+      color: var(--accent2); font-size: 0.8rem; margin-top: 8px; margin-bottom: 0;
+      min-height: 1.2em;
+    }
     /* Result */
     #result { display: none; margin-top: 24px; }
     #result.visible { display: block; animation: fade 0.3s ease; }
@@ -133,18 +137,21 @@
       <h1>RudVentur – Feeling Lucky</h1>
       <p class="subtitle">Lucky Place • Lucky Event • Good Trip — real random search, no suggestions</p>
     </header>
+
     <!-- Main Lucky modes -->
     <div class="lucky-row">
       <button class="lucky-btn active" data-lucky="place">Lucky Place</button>
       <button class="lucky-btn" data-lucky="event">Lucky Event</button>
       <button class="lucky-btn" data-lucky="both">Good Trip</button>
     </div>
+
     <!-- Secondary filters -->
     <div class="secondary">
       <button class="sec-btn active" data-sec="present">Present</button>
       <button class="sec-btn" data-sec="past">Past</button>
       <button class="sec-btn" data-sec="future">Future</button>
     </div>
+
     <!-- Start -->
     <div class="field">
       <label>Start point</label>
@@ -155,6 +162,7 @@
         <button class="map-pick-btn" id="startRandomBtn">🎲 Random</button>
       </div>
     </div>
+
     <!-- Target keywords -->
     <div class="field">
       <label>Target search keywords (optional)</label>
@@ -163,6 +171,7 @@
         <button class="map-pick-btn" id="keywordRandomBtn">🎲 Random</button>
       </div>
     </div>
+
     <!-- Time window -->
     <div class="field">
       <label>Time window</label>
@@ -175,6 +184,7 @@
         <input type="date" id="datePickEnd" disabled placeholder="To" />
       </div>
     </div>
+
     <!-- Trip type -->
     <div class="field">
       <label>Trip type</label>
@@ -187,6 +197,7 @@
         </label>
       </div>
     </div>
+
     <!-- Options -->
     <div class="ticks">
       <label><input type="checkbox" id="useEstimate" checked> Use time estimation (recommended)</label>
@@ -196,6 +207,7 @@
       <label><input type="checkbox" id="preferPublic"> Prefer public transport</label>
       <label><input type="checkbox" id="allowWeird"> Weird vehicles (higher rudness)</label>
     </div>
+
     <!-- Map -->
     <div class="field">
       <label>Search region (drag right edge to resize)</label>
@@ -203,9 +215,12 @@
         <div id="mainMap"></div>
         <div class="resize-handle" id="resizeHandle"></div>
       </div>
-      <p class="map-hint">This is the real search area — pan/zoom the map (or use GPS / pick a point) before hitting Lucky. No curated list, ever: every target comes from a live OpenStreetMap search inside whatever the map is showing, or — if nothing local turns up — a real live headline from a free news site dropped on the map with a funny route to reach it.</p>
+      <p class="map-hint">This is the real search area — pan/zoom the map (or use GPS / pick a point) before hitting Lucky. No curated list, ever: every target comes from a live OpenStreetMap search inside whatever the map is showing, or — if nothing local turns up — a real live headline from a free news site, geolocated live and dropped on the map with a funny route to reach it.</p>
     </div>
+
     <button id="go">I’m Feeling Lucky</button>
+    <p class="map-hint" id="searchStatus"></p>
+
     <!-- Result -->
     <div id="result">
       <div class="target-card">
@@ -222,15 +237,30 @@
       <div class="routes-title" id="routesTitle">Possible (funny) routes</div>
       <div id="routes"></div>
     </div>
-    <footer>RudVentur Feeling Lucky • Live random search via OpenStreetMap (Overpass API), with a live free-news fallback (GDELT) • Routes are deliberately funny; timing is still an estimate</footer>
+
+    <footer>RudVentur Feeling Lucky • Live random search via OpenStreetMap (Overpass API), with a live free-news fallback (GDELT) geolocated live via Nominatim • Routes are deliberately funny; timing is still an estimate</footer>
   </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="search-engine.js"></script>
   <script>
-    // The actual target search (OSM Overpass + Wikidata, category tags,
-    // photo/GPS normalization) lives in search-engine.js as
-    // window.TripSearchEngine — this script is just the UI: map/state,
-    // form handling, and rendering whatever TripSearchEngine hands back.
+    // ---- Startup guard: if a dependency is missing (wrong filename, blocked
+    // CDN, opened as file:// ...) fail LOUDLY on the button instead of
+    // silently doing nothing. ----
+    if (typeof L === "undefined" || typeof TripSearchEngine === "undefined") {
+      const goBtn = document.getElementById("go");
+      goBtn.disabled = true;
+      goBtn.textContent = typeof TripSearchEngine === "undefined"
+        ? "search-engine.js not loaded (check filename & folder)"
+        : "Map library blocked (check connection / ad-blocker)";
+      console.error("Startup failed — L:", typeof L, "| TripSearchEngine:", typeof TripSearchEngine);
+      throw new Error("Missing dependency — see the button for details");
+    }
+
+    // The actual target search (OSM Overpass + live-news fallback with live
+    // geocoding, category tags, photo/GPS normalization) lives in
+    // search-engine.js as window.TripSearchEngine — this script is just the
+    // UI: map/state, form handling, and rendering whatever it hands back.
     const { pick, KEYWORD_IDEAS } = TripSearchEngine;
 
     // ========== STATE ==========
@@ -275,6 +305,7 @@
         luckyMode = btn.dataset.lucky;
       });
     });
+
     // Secondary filters
     document.querySelectorAll(".sec-btn").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -283,6 +314,7 @@
         secFilter = btn.dataset.sec;
       });
     });
+
     // Now checkbox — controls both ends of the time-span range
     document.getElementById("nowCheck").addEventListener("change", e => {
       document.getElementById("datePick").disabled = e.target.checked;
@@ -322,6 +354,7 @@
 
     // GPS
     document.getElementById("gpsBtn").addEventListener("click", () => { doLocate({ silent: false }); });
+
     // Pick on map
     document.getElementById("mapPickBtn").addEventListener("click", () => {
       pickingOnMap = true;
@@ -334,10 +367,10 @@
       L.marker([startLatLon.lat, startLatLon.lon]).addTo(mainMap).bindPopup("Start").openPopup();
       pickingOnMap = false;
     });
+
     // Random start point — a uniform random draw inside the current map view
     // once you've panned/zoomed to an area, otherwise a uniform draw across
-    // the whole (non-polar) world, same "no suggestions, one random draw"
-    // principle as the target search itself.
+    // the whole (non-polar) world.
     document.getElementById("startRandomBtn").addEventListener("click", () => {
       let lat, lon;
       if (mapInteracted) {
@@ -356,6 +389,10 @@
     });
 
     // ========== HELPERS ==========
+    function setStatus(msg) {
+      document.getElementById("searchStatus").textContent = msg || "";
+    }
+
     function getTimeWindow() {
       if (document.getElementById("nowCheck").checked) return "now";
       const from = document.getElementById("datePick").value;
@@ -363,12 +400,14 @@
       if (from && to && to !== from) return `${from} → ${to}`;
       return from || to || "now";
     }
+
     function estimateLeaveHours(target) {
       // Still a rough demo estimate (labelled as such in the UI) — separate
-      // concern from target selection, untouched by the randomisation fix.
+      // concern from target selection.
       if (luckyMode !== "both") return null;
       return 2 + Math.floor(Math.random() * 10); // 2–12 h for demo
     }
+
     function showPlainMessage(title, desc) {
       document.getElementById("targetName").textContent = title;
       document.getElementById("targetDesc").textContent = desc;
@@ -395,10 +434,12 @@
       if (!mapInteracted && !startLatLon) {
         goBtn.disabled = true;
         goBtn.textContent = "Locating…";
+        setStatus("Locating you (silent GPS fix)…");
         const got = await doLocate({ silent: true });
         goBtn.disabled = false;
         goBtn.textContent = "I’m Feeling Lucky";
         if (!got) {
+          setStatus("");
           showPlainMessage(
             "Pick a start point first",
             "Use your GPS, pick a spot on the map, or pan/zoom the map to the area you want to search — then hit Feeling Lucky again."
@@ -411,25 +452,35 @@
       const originalLabel = goBtn.textContent;
       goBtn.textContent = "Searching real places…";
       document.getElementById("result").classList.remove("visible");
+      setStatus("Starting live search…");
 
       try {
         const keyword = document.getElementById("targetKeywords").value.trim();
-       const found = await TripSearchEngine.fetchRandomTarget(mainMap, luckyMode, secFilter, keyword);
 
-if (!found) {
-  showPlainMessage(
-    "No luck this time",
-    "No matching real places turned up nearby, and the live news fallback came up empty too. Try a different area, mode or filter."
-  );
-  return;
-}
+        // fetchRandomTarget streams progress back through setStatus so the
+        // user can see exactly which live step it's on.
+        const found = await TripSearchEngine.fetchRandomTarget(
+          mainMap, luckyMode, secFilter, keyword, setStatus
+        );
+
+        if (!found) {
+          setStatus("");
+          showPlainMessage(
+            "No luck this time",
+            "No matching real places turned up nearby, and the live news fallback came up empty too. Try a different area, mode or filter."
+          );
+          return;
+        }
+
+        setStatus("");
         const target = found.target;
         const isReturn = document.getElementById("tripReturn").checked;
         const leaveHours = estimateLeaveHours(target);
 
         document.getElementById("routesTitle").style.display = "block";
         document.getElementById("targetName").textContent = target.name;
-        document.getElementById("targetDesc").textContent = target.desc + (found.widened ? " — nothing local matched, so here's a real live news story instead" : "");
+        document.getElementById("targetDesc").textContent = target.desc +
+          (found.widened ? " — nothing local matched, so here's a real live news story instead" : "");
 
         // GPS location — plain coordinates plus a live link to view it on OSM.
         document.getElementById("targetGps").innerHTML =
@@ -459,9 +510,11 @@ if (!found) {
         } else {
           cd.style.display = "none";
         }
+
         document.getElementById("targetContact").innerHTML = target.link
           ? `<a href="${target.link}" target="_blank" rel="noopener">More info →</a>`
           : "No extra link";
+
         document.getElementById("modeTag").textContent =
           luckyMode.toUpperCase() + " • " + secFilter.toUpperCase() + " • " +
           (isReturn ? "RETURN" : "ONE-WAY") + " • " + getTimeWindow() +
@@ -500,10 +553,12 @@ if (!found) {
           `;
           routesEl.appendChild(div);
         }
+
         document.getElementById("result").classList.add("visible");
         document.getElementById("result").scrollIntoView({ behavior: "smooth" });
       } catch (err) {
         console.error(err);
+        setStatus("");
         const raw = err && err.message ? err.message : String(err);
         const looksLikeBlockedRequest = /failed to fetch|networkerror|load failed/i.test(raw);
         const hint = looksLikeBlockedRequest
@@ -511,7 +566,7 @@ if (!found) {
           : "";
         showPlainMessage(
           "Search failed",
-          `Couldn't reach OpenStreetMap's search after trying multiple mirrors.${hint} (${raw})`
+          `Couldn't reach the live data sources after trying everything available.${hint} (${raw})`
         );
       } finally {
         goBtn.disabled = false;
