@@ -203,7 +203,7 @@
         <div id="mainMap"></div>
         <div class="resize-handle" id="resizeHandle"></div>
       </div>
-      <p class="map-hint">This is the real search area — pan/zoom the map (or use GPS / pick a point) before hitting Lucky. No curated list: every target comes from a live OpenStreetMap + Wikidata search inside whatever the map is showing.</p>
+      <p class="map-hint">This is the real search area — pan/zoom the map (or use GPS / pick a point) before hitting Lucky. No curated list, ever: every target comes from a live OpenStreetMap search inside whatever the map is showing, or — if nothing local turns up — a real live headline from a free news site dropped on the map with a funny route to reach it.</p>
     </div>
     <button id="go">I’m Feeling Lucky</button>
     <!-- Result -->
@@ -219,10 +219,10 @@
         <div class="mode-tag" id="modeTag"></div>
       </div>
       <div id="resultMap"></div>
-      <div class="routes-title" id="routesTitle">Possible routes</div>
+      <div class="routes-title" id="routesTitle">Possible (funny) routes</div>
       <div id="routes"></div>
     </div>
-    <footer>RudVentur Feeling Lucky • Live random search via OpenStreetMap (Overpass API) + Wikidata • Routes &amp; timing are still estimates</footer>
+    <footer>RudVentur Feeling Lucky • Live random search via OpenStreetMap (Overpass API), with a live free-news fallback (GDELT) • Routes are deliberately funny; timing is still an estimate</footer>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="search-engine.js"></script>
@@ -369,16 +369,6 @@
       if (luckyMode !== "both") return null;
       return 2 + Math.floor(Math.random() * 10); // 2–12 h for demo
     }
-    function buildRoute(startName, target, isReturn) {
-      const stages = [];
-      stages.push(`Leave from ${startName || "your current position"}`);
-      stages.push("Walk or take local transport to the main hub");
-      stages.push(`Travel toward ${target.loc}`);
-      stages.push(`Arrive at ${target.name}`);
-      if (isReturn) stages.push(`Return journey back to ${startName || "your start point"}`);
-      return stages;
-    }
-
     function showPlainMessage(title, desc) {
       document.getElementById("targetName").textContent = title;
       document.getElementById("targetDesc").textContent = desc;
@@ -426,31 +416,10 @@
         const keyword = document.getElementById("targetKeywords").value.trim();
        const found = await TripSearchEngine.fetchRandomTarget(mainMap, luckyMode, secFilter, keyword);
 
-if (found && found.rateLimited) {
-  showPlainMessage("Please wait", found.message);
-  let left = found.waitSeconds;
-  goBtn.disabled = true;
-  goBtn.textContent = `Wait ${left}s…`;
-  const timer = setInterval(() => {
-    left--;
-    goBtn.textContent = left > 0 ? `Wait ${left}s…` : "I’m Feeling Lucky";
-    if (left <= 0) {
-      clearInterval(timer);
-      goBtn.disabled = false;
-    }
-  }, 1000);
-  return;
-}
-
-if (!found) {
-  showPlainMessage("No luck this time", "Something went wrong.");
-  return;
-}
-
 if (!found) {
   showPlainMessage(
     "No luck this time",
-    "No matching real places turned up nearby, even after widening the search. Try a different area, mode or filter."
+    "No matching real places turned up nearby, and the live news fallback came up empty too. Try a different area, mode or filter."
   );
   return;
 }
@@ -460,7 +429,7 @@ if (!found) {
 
         document.getElementById("routesTitle").style.display = "block";
         document.getElementById("targetName").textContent = target.name;
-        document.getElementById("targetDesc").textContent = target.desc + (found.widened ? " — search area widened to find a match" : "");
+        document.getElementById("targetDesc").textContent = target.desc + (found.widened ? " — nothing local matched, so here's a real live news story instead" : "");
 
         // GPS location — plain coordinates plus a live link to view it on OSM.
         document.getElementById("targetGps").innerHTML =
@@ -496,7 +465,7 @@ if (!found) {
         document.getElementById("modeTag").textContent =
           luckyMode.toUpperCase() + " • " + secFilter.toUpperCase() + " • " +
           (isReturn ? "RETURN" : "ONE-WAY") + " • " + getTimeWindow() +
-          " • via " + (target.source === "wikidata" ? "Wikidata" : "OpenStreetMap");
+          " • via " + (target.source === "news" ? "live news (GDELT)" : target.source === "wikidata" ? "Wikidata" : "OpenStreetMap");
 
         // Start coords
         let sLat = startLatLon ? startLatLon.lat : mainMap.getCenter().lat;
@@ -515,11 +484,11 @@ if (!found) {
           color: "#ff6b35", weight: 3, dashArray: "8,8"
         }).addTo(resultMap);
 
-        // Routes
+        // Routes — funny on purpose: silly transport, real distance underneath
         const routesEl = document.getElementById("routes");
         routesEl.innerHTML = "";
         for (let i = 0; i < 2; i++) {
-          const stages = buildRoute(startText, target, isReturn);
+          const stages = TripSearchEngine.buildFunnyRoute(startText, target, sLat, sLon, isReturn);
           const div = document.createElement("div");
           div.className = "route";
           div.innerHTML = `
