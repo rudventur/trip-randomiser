@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RudVentur – Feeling Lucky</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --bg: #0f1115; --card: #1a1d24; --accent: #ff6b35; --accent2: #00d4ff;
+      --text: #e8eaed; --muted: #9aa0a6; --border: #2d323c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg); color: var(--text); min-height: 100vh;
+      padding: 16px 12px 50px; line-height: 1.4;
+    }
+    .container { max-width: 860px; margin: 0 auto; }
+    header { text-align: center; margin-bottom: 18px; }
+    h1 { font-size: 1.65rem; font-weight: 800; letter-spacing: -0.5px; }
+    .subtitle { color: var(--muted); font-size: 0.88rem; margin-top: 3px; }
+    /* Lucky buttons */
+    .lucky-row {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 16px;
+    }
+    .lucky-btn {
+      padding: 14px 8px; border-radius: 10px;
+      background: var(--card); color: var(--text); font-weight: 700; font-size: 0.92rem;
+      cursor: pointer; border: 1px solid var(--border); transition: 0.15s;
+    }
+    .lucky-btn:hover { border-color: var(--accent); }
+    .lucky-btn.active { background: var(--accent); color: #111; border-color: var(--accent); }
+    /* Secondary filters */
+    .secondary {
+      display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;
+    }
+    .sec-btn {
+      padding: 7px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--card); color: var(--muted); font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    }
+    .sec-btn.active { background: var(--accent2); color: #111; border-color: var(--accent2); }
+    .field { margin-bottom: 12px; }
+    label { display: block; font-size: 0.72rem; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"], input[type="date"] {
+      flex: 1; min-width: 140px; padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 0.92rem;
+    }
+    input:focus { outline: none; border-color: var(--accent2); }
+    .gps-btn, .map-pick-btn {
+      padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--card); color: var(--text); font-weight: 600; font-size: 0.85rem; cursor: pointer;
+    }
+    .gps-btn:hover, .map-pick-btn:hover { border-color: var(--accent2); }
+    .ticks {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px;
+      margin: 10px 0 12px; font-size: 0.84rem;
+    }
+    .ticks label { display: flex; align-items: center; gap: 6px; cursor: pointer; text-transform: none; letter-spacing: 0; color: var(--text); }
+    .ticks input { width: 14px; height: 14px; accent-color: var(--accent); }
+    /* Map + resize */
+    .map-wrap {
+      position: relative; margin-bottom: 6px;
+      border: 1px solid var(--border); border-radius: 11px; overflow: hidden;
+    }
+    #mainMap { height: 260px; width: 100%; background: #1a1d24; }
+    .resize-handle {
+      position: absolute; right: 0; top: 0; bottom: 0; width: 10px;
+      background: linear-gradient(90deg, transparent, rgba(255,107,53,0.35));
+      cursor: ew-resize; z-index: 1000;
+    }
+    .map-hint { color: var(--muted); font-size: 0.76rem; margin-bottom: 14px; }
+    #go {
+      width: 100%; padding: 14px; border: none; border-radius: 10px;
+      background: var(--accent); color: #111; font-weight: 800; font-size: 1.05rem; cursor: pointer;
+      margin-top: 6px;
+    }
+    #go:hover { filter: brightness(1.07); }
+    #go:disabled { opacity: 0.65; cursor: wait; filter: none; }
+    /* Result */
+    #result { display: none; margin-top: 24px; }
+    #result.visible { display: block; animation: fade 0.3s ease; }
+    @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .target-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px 18px; margin-bottom: 14px;
+    }
+    .target-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; color: var(--accent2); margin-bottom: 3px; }
+    .target-name { font-size: 1.25rem; font-weight: 700; margin-bottom: 4px; }
+    .target-desc { color: var(--muted); font-size: 0.88rem; margin-bottom: 6px; }
+    .countdown {
+      margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+      background: #2a1f18; border: 1px solid #5c3a22; color: #ffb380;
+      font-weight: 700; font-size: 0.95rem;
+    }
+    .target-contact { font-size: 0.85rem; margin-top: 6px; }
+    .target-contact a { color: var(--accent2); text-decoration: none; }
+    .mode-tag {
+      display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 999px;
+      font-size: 0.68rem; font-weight: 600; background: #2a2f3a; color: var(--accent2);
+    }
+    #resultMap {
+      height: 220px; border-radius: 11px; border: 1px solid var(--border); margin-bottom: 16px;
+      background: #1a1d24;
+    }
+    .routes-title { font-size: 0.9rem; font-weight: 700; color: var(--muted); margin-bottom: 9px; }
+    .route {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 10px;
+    }
+    .route-header { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .route-num {
+      width: 22px; height: 22px; border-radius: 50%; background: var(--accent);
+      color: #111; font-weight: 800; font-size: 0.78rem;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .route-title { font-weight: 700; font-size: 0.9rem; }
+    .stages { list-style: none; }
+    .stages li { position: relative; padding-left: 15px; margin-bottom: 5px; font-size: 0.87rem; }
+    .stages li::before { content: "→"; position: absolute; left: 0; color: var(--accent2); font-weight: 700; }
+    footer { text-align: center; margin-top: 30px; color: var(--muted); font-size: 0.72rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>RudVentur – Feeling Lucky</h1>
+      <p class="subtitle">Lucky Place • Lucky Event • Good Trip — real random search, no suggestions</p>
+    </header>
+    <!-- Main Lucky modes -->
+    <div class="lucky-row">
+      <button class="lucky-btn active" data-lucky="place">Lucky Place</button>
+      <button class="lucky-btn" data-lucky="event">Lucky Event</button>
+      <button class="lucky-btn" data-lucky="both">Good Trip</button>
+    </div>
+    <!-- Secondary filters -->
+    <div class="secondary">
+      <button class="sec-btn active" data-sec="present">Present</button>
+      <button class="sec-btn" data-sec="past">Past</button>
+      <button class="sec-btn" data-sec="future">Future</button>
+    </div>
+    <!-- Start -->
+    <div class="field">
+      <label>Start point</label>
+      <div class="row">
+        <input type="text" id="start" placeholder="Type a place or use GPS / map" />
+        <button class="gps-btn" id="gpsBtn">Use my GPS</button>
+        <button class="map-pick-btn" id="mapPickBtn">Pick on map</button>
+      </div>
+    </div>
+    <!-- Time window -->
+    <div class="field">
+      <label>Time window</label>
+      <div class="row">
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;color:var(--text);font-size:0.88rem;">
+          <input type="checkbox" id="nowCheck" checked> Now
+        </label>
+        <input type="date" id="datePick" disabled />
+      </div>
+    </div>
+    <!-- Options -->
+    <div class="ticks">
+      <label><input type="checkbox" id="useEstimate" checked> Use time estimation (recommended)</label>
+      <label><input type="checkbox" id="allowWalk" checked> Walking stages ok</label>
+      <label><input type="checkbox" id="allowBike" checked> Bike ok</label>
+      <label><input type="checkbox" id="allowCar" checked> Car ok</label>
+      <label><input type="checkbox" id="preferPublic"> Prefer public transport</label>
+      <label><input type="checkbox" id="allowWeird"> Weird vehicles (higher rudness)</label>
+    </div>
+    <!-- Map -->
+    <div class="field">
+      <label>Search region (drag right edge to resize)</label>
+      <div class="map-wrap" id="mapWrap">
+        <div id="mainMap"></div>
+        <div class="resize-handle" id="resizeHandle"></div>
+      </div>
+      <p class="map-hint">This is the real search area — pan/zoom the map (or use GPS / pick a point) before hitting Lucky. No curated list: every target comes from a live OpenStreetMap search inside whatever the map is showing.</p>
+    </div>
+    <button id="go">I’m Feeling Lucky</button>
+    <!-- Result -->
+    <div id="result">
+      <div class="target-card">
+        <div class="target-label">Your Lucky Target</div>
+        <div class="target-name" id="targetName"></div>
+        <div class="target-desc" id="targetDesc"></div>
+        <div class="countdown" id="countdown" style="display:none;"></div>
+        <div class="target-contact" id="targetContact"></div>
+        <div class="mode-tag" id="modeTag"></div>
+      </div>
+      <div id="resultMap"></div>
+      <div class="routes-title" id="routesTitle">Possible routes</div>
+      <div id="routes"></div>
+    </div>
+    <footer>RudVentur Feeling Lucky • Live random search via OpenStreetMap (Overpass API) • Routes &amp; timing are still estimates</footer>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // ==========================================================================
+    // RANDOM TARGET SEARCH
+    // No curated suggestion lists. Every target is pulled live from OpenStreetMap
+    // via the free Overpass API, using whatever area the map is currently showing
+    // as the real search region, then picked with a single uniform random draw.
+    // ==========================================================================
+
+    // Tag filters per mode/time-filter. Each pair is [osmKey, valueAlternation].
+    // "past" and "future" reuse real OSM concepts instead of inventing fake
+    // events/dates: historic=* for things that used to be here, construction=*
+    // for things that will exist here.
+    const CATEGORY_TAGS = {
+      place: {
+        present: [
+          ["tourism", "attraction|viewpoint|museum|gallery|zoo|artwork|picnic_site"],
+          ["amenity", "cafe|restaurant|bar|pub|library|cinema|theatre|arts_centre|marketplace|place_of_worship|fountain"],
+          ["leisure", "park|garden|nature_reserve|beach_resort"],
+          ["shop", "books"],
+          ["natural", "beach|peak|water"]
+        ],
+        past: [["historic", ".*"]],
+        future: [["building", "construction"], ["landuse", "construction"], ["construction", ".*"]]
+      },
+      event: {
+        present: [
+          ["amenity", "nightclub|theatre|cinema|arts_centre|community_centre|conference_centre|events_venue|marketplace"],
+          ["leisure", "stadium|sports_centre|water_park"],
+          ["tourism", "theme_park|attraction|zoo"]
+        ],
+        past: [["historic", ".*"]],
+        future: [["building", "construction"], ["landuse", "construction"], ["construction", ".*"]]
+      }
+    };
+
+    function tagsFor(mode, sec) {
+      if (mode === "both") {
+        const p = CATEGORY_TAGS.place[sec] || CATEGORY_TAGS.place.present;
+        const e = CATEGORY_TAGS.event[sec] || CATEGORY_TAGS.event.present;
+        return [...p, ...e];
+      }
+      const table = CATEGORY_TAGS[mode] || CATEGORY_TAGS.place;
+      return table[sec] || table.present;
+    }
+
+    function buildOverpassQuery(bbox, tagPairs) {
+      const [s, w, n, e] = bbox;
+      const clauses = tagPairs.map(([k, v]) => {
+        const pattern = v === ".*" ? ".*" : `^(${v})$`;
+        return `nwr["${k}"~"${pattern}"](${s},${w},${n},${e});`;
+      }).join("\n");
+      return `[out:json][timeout:25];(${clauses});out center 300;`;
+    }
+
+    // Several independent public Overpass mirrors — if one is down, rate
+    // limited, or blocked for some reason, the next one is tried before
+    // giving up. Same query, same random pick either way.
+    const OVERPASS_ENDPOINTS = [
+      "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
+      "https://overpass.osm.ch/api/interpreter"
+    ];
+
+    async function queryOverpassOnce(endpoint, query) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          body: "data=" + encodeURIComponent(query),
+          signal: controller.signal
+        });
+        if (!res.ok) throw new Error(`${endpoint} responded ${res.status}`);
+        return await res.json();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function queryOverpass(query) {
+      const errors = [];
+      for (const endpoint of OVERPASS_ENDPOINTS) {
+        try {
+          return await queryOverpassOnce(endpoint, query);
+        } catch (err) {
+          errors.push(`${endpoint} → ${err && err.message ? err.message : err}`);
+        }
+      }
+      const combined = new Error(errors.join(" | "));
+      combined.allMirrorsFailed = true;
+      throw combined;
+    }
+
+    function elCenter(el) {
+      if (typeof el.lat === "number" && typeof el.lon === "number") return { lat: el.lat, lon: el.lon };
+      if (el.center && typeof el.center.lat === "number") return { lat: el.center.lat, lon: el.center.lon };
+      return null;
+    }
+
+    function humanizeTagValue(v) {
+      return String(v).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    function categoryLabel(key, val) {
+      if (key === "historic") return val && val !== "yes" ? `Historic ${humanizeTagValue(val)}` : "Historic Site";
+      if (key === "landuse" && val === "construction") return "Construction Site";
+      if (key === "construction" || val === "construction") return "Under Construction";
+      if (val === "yes") return humanizeTagValue(key);
+      return humanizeTagValue(val);
+    }
+
+    const CATEGORY_KEYS = ["tourism", "amenity", "leisure", "shop", "natural", "historic", "building", "landuse", "construction"];
+
+    function describeElement(el) {
+      const tags = el.tags || {};
+      let matchedKey = null, matchedVal = null;
+      for (const k of CATEGORY_KEYS) {
+        if (tags[k]) { matchedKey = k; matchedVal = tags[k]; break; }
+      }
+      const label = matchedKey ? categoryLabel(matchedKey, matchedVal) : "Place";
+      const name = tags.name || `Unnamed ${label.toLowerCase()}`;
+      const addrLine = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+      const addrCity = tags["addr:city"] || tags["addr:town"] || tags["addr:suburb"] || tags["addr:village"];
+      const locParts = [addrLine, addrCity].filter(Boolean);
+      const loc = locParts.length ? locParts.join(", ") : label;
+      const link = tags.website || tags["contact:website"] ||
+        (tags.wikipedia ? `https://en.wikipedia.org/wiki/${encodeURIComponent(tags.wikipedia.split(":").slice(1).join(":") || tags.wikipedia)}` : null);
+      return { name, loc, desc: `Found on OpenStreetMap · ${label}`, link };
+    }
+
+    function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+    function ensureSearchableZoom() {
+      if (mainMap.getZoom() < 11) {
+        mainMap.setView(mainMap.getCenter(), 13, { animate: false });
+      }
+    }
+
+    // Fetch one random real target. If the current view has no matches, the
+    // search area is automatically widened (zoomed out) a few times before
+    // giving up — still no suggestions, just a bigger honest search.
+    async function fetchRandomTarget(mode, sec) {
+      ensureSearchableZoom();
+      const tagPairs = tagsFor(mode, sec);
+      let widened = false;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const b = mainMap.getBounds();
+        const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
+        const query = buildOverpassQuery(bbox, tagPairs);
+        const data = await queryOverpass(query);
+        const elements = (data.elements || []).filter(el => elCenter(el) !== null);
+        if (elements.length > 0) {
+          return { element: pick(elements), widened };
+        }
+        widened = true;
+        const z = Math.max(2, mainMap.getZoom() - 3);
+        mainMap.setView(mainMap.getCenter(), z, { animate: false });
+      }
+      return null;
+    }
+
+    // ========== STATE ==========
+    let luckyMode = "place";
+    let secFilter = "present";
+    let mainMap, resultMap;
+    let startLatLon = null;
+    let pickingOnMap = false;
+    let mapInteracted = false;
+
+    // Init map
+    mainMap = L.map("mainMap").setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap", maxZoom: 18
+    }).addTo(mainMap);
+    mainMap.on("moveend zoomend", () => { mapInteracted = true; });
+
+    // Resize handle (sideways) — this genuinely changes how much geographic
+    // area is visible, and therefore how much area gets searched.
+    const wrap = document.getElementById("mapWrap");
+    const handle = document.getElementById("resizeHandle");
+    let resizing = false;
+    handle.addEventListener("mousedown", e => {
+      resizing = true;
+      e.preventDefault();
+    });
+    window.addEventListener("mousemove", e => {
+      if (!resizing) return;
+      const rect = wrap.getBoundingClientRect();
+      let newW = e.clientX - rect.left;
+      newW = Math.max(280, Math.min(newW, window.innerWidth - 40));
+      wrap.style.width = newW + "px";
+      mainMap.invalidateSize();
+    });
+    window.addEventListener("mouseup", () => { resizing = false; });
+
+    // Lucky mode buttons
+    document.querySelectorAll(".lucky-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".lucky-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        luckyMode = btn.dataset.lucky;
+      });
+    });
+    // Secondary filters
+    document.querySelectorAll(".sec-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".sec-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        secFilter = btn.dataset.sec;
+      });
+    });
+    // Now checkbox
+    document.getElementById("nowCheck").addEventListener("change", e => {
+      document.getElementById("datePick").disabled = e.target.checked;
+    });
+
+    // Shared geolocation helper — used by the GPS button, and quietly by
+    // "Feeling Lucky" itself if the user hasn't set a start point or touched
+    // the map yet (so the search doesn't run against the default world view).
+    function doLocate({ silent = false } = {}) {
+      return new Promise(resolve => {
+        if (!navigator.geolocation) {
+          if (!silent) alert("Geolocation not available");
+          return resolve(false);
+        }
+        const timer = setTimeout(() => resolve(false), silent ? 6000 : 15000);
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            clearTimeout(timer);
+            startLatLon = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+            document.getElementById("start").value = `GPS ${startLatLon.lat.toFixed(4)}, ${startLatLon.lon.toFixed(4)}`;
+            mainMap.setView([startLatLon.lat, startLatLon.lon], 13);
+            L.marker([startLatLon.lat, startLatLon.lon]).addTo(mainMap).bindPopup("You are here").openPopup();
+            resolve(true);
+          },
+          () => { clearTimeout(timer); if (!silent) alert("Could not get location"); resolve(false); },
+          { timeout: silent ? 5500 : 10000 }
+        );
+      });
+    }
+
+    // GPS
+    document.getElementById("gpsBtn").addEventListener("click", () => { doLocate({ silent: false }); });
+    // Pick on map
+    document.getElementById("mapPickBtn").addEventListener("click", () => {
+      pickingOnMap = true;
+      alert("Click on the map to set your start point");
+    });
+    mainMap.on("click", e => {
+      if (!pickingOnMap) return;
+      startLatLon = { lat: e.latlng.lat, lon: e.latlng.lng };
+      document.getElementById("start").value = `Map ${startLatLon.lat.toFixed(4)}, ${startLatLon.lon.toFixed(4)}`;
+      L.marker([startLatLon.lat, startLatLon.lon]).addTo(mainMap).bindPopup("Start").openPopup();
+      pickingOnMap = false;
+    });
+
+    // ========== HELPERS ==========
+    function getTimeWindow() {
+      if (document.getElementById("nowCheck").checked) return "now";
+      return document.getElementById("datePick").value || "now";
+    }
+    function estimateLeaveHours(target) {
+      // Still a rough demo estimate (labelled as such in the UI) — separate
+      // concern from target selection, untouched by the randomisation fix.
+      if (luckyMode !== "both") return null;
+      return 2 + Math.floor(Math.random() * 10); // 2–12 h for demo
+    }
+    function buildRoute(startName, target) {
+      const stages = [];
+      stages.push(`Leave from ${startName || "your current position"}`);
+      stages.push("Walk or take local transport to the main hub");
+      stages.push(`Travel toward ${target.loc}`);
+      stages.push(`Arrive at ${target.name}`);
+      return stages;
+    }
+
+    function showPlainMessage(title, desc) {
+      document.getElementById("targetName").textContent = title;
+      document.getElementById("targetDesc").textContent = desc;
+      document.getElementById("countdown").style.display = "none";
+      document.getElementById("targetContact").innerHTML = "";
+      document.getElementById("modeTag").textContent = "";
+      document.getElementById("resultMap").innerHTML = "";
+      document.getElementById("routesTitle").style.display = "none";
+      document.getElementById("routes").innerHTML = "";
+      document.getElementById("result").classList.add("visible");
+      document.getElementById("result").scrollIntoView({ behavior: "smooth" });
+    }
+
+    // ========== MAIN ==========
+    document.getElementById("go").addEventListener("click", async () => {
+      const goBtn = document.getElementById("go");
+      const startText = document.getElementById("start").value.trim();
+
+      // If the user hasn't set a start point or touched the map, try a quiet
+      // one-shot geolocation rather than silently searching the default
+      // world view (which is mid-ocean and will never return anything).
+      if (!mapInteracted && !startLatLon) {
+        goBtn.disabled = true;
+        goBtn.textContent = "Locating…";
+        const got = await doLocate({ silent: true });
+        goBtn.disabled = false;
+        goBtn.textContent = "I’m Feeling Lucky";
+        if (!got) {
+          showPlainMessage(
+            "Pick a start point first",
+            "Use your GPS, pick a spot on the map, or pan/zoom the map to the area you want to search — then hit Feeling Lucky again."
+          );
+          return;
+        }
+      }
+
+      goBtn.disabled = true;
+      const originalLabel = goBtn.textContent;
+      goBtn.textContent = "Searching real places…";
+      document.getElementById("result").classList.remove("visible");
+
+      try {
+        const found = await fetchRandomTarget(luckyMode, secFilter);
+        if (!found) {
+          showPlainMessage(
+            "No luck this time",
+            "No matching real places turned up nearby, even after widening the search. Try a different area, mode or filter."
+          );
+          return;
+        }
+
+        const coords = elCenter(found.element);
+        const info = describeElement(found.element);
+        const target = { name: info.name, loc: info.loc, lat: coords.lat, lon: coords.lon, desc: info.desc, link: info.link, type: secFilter };
+        const leaveHours = estimateLeaveHours(target);
+
+        document.getElementById("routesTitle").style.display = "block";
+        document.getElementById("targetName").textContent = target.name;
+        document.getElementById("targetDesc").textContent = target.desc + (found.widened ? " — search area widened to find a match" : "");
+        const cd = document.getElementById("countdown");
+        if (leaveHours !== null) {
+          cd.style.display = "block";
+          cd.textContent = `Last possible leave in ~${leaveHours} hours (estimation)`;
+        } else {
+          cd.style.display = "none";
+        }
+        document.getElementById("targetContact").innerHTML = target.link
+          ? `<a href="${target.link}" target="_blank" rel="noopener">More info →</a>`
+          : "No extra link";
+        document.getElementById("modeTag").textContent =
+          luckyMode.toUpperCase() + " • " + secFilter.toUpperCase() + " • " + getTimeWindow();
+
+        // Start coords
+        let sLat = startLatLon ? startLatLon.lat : mainMap.getCenter().lat;
+        let sLon = startLatLon ? startLatLon.lon : mainMap.getCenter().lng;
+
+        // Result map
+        if (resultMap) resultMap.remove();
+        resultMap = L.map("resultMap").setView([(sLat + target.lat) / 2, (sLon + target.lon) / 2], 3);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OpenStreetMap", maxZoom: 18
+        }).addTo(resultMap);
+        L.marker([sLat, sLon]).addTo(resultMap).bindPopup("Start");
+        L.marker([target.lat, target.lon]).addTo(resultMap).bindPopup(target.name);
+        resultMap.fitBounds(L.latLngBounds([[sLat, sLon], [target.lat, target.lon]]), { padding: [30, 30] });
+        L.polyline([[sLat, sLon], [target.lat, target.lon]], {
+          color: "#ff6b35", weight: 3, dashArray: "8,8"
+        }).addTo(resultMap);
+
+        // Routes
+        const routesEl = document.getElementById("routes");
+        routesEl.innerHTML = "";
+        for (let i = 0; i < 2; i++) {
+          const stages = buildRoute(startText, target);
+          const div = document.createElement("div");
+          div.className = "route";
+          div.innerHTML = `
+            <div class="route-header">
+              <div class="route-num">${i + 1}</div>
+              <div class="route-title">${i === 0 ? "Direct option" : "Alternative option"}</div>
+            </div>
+            <ul class="stages">${stages.map(s => `<li>${s}</li>`).join("")}</ul>
+          `;
+          routesEl.appendChild(div);
+        }
+        document.getElementById("result").classList.add("visible");
+        document.getElementById("result").scrollIntoView({ behavior: "smooth" });
+      } catch (err) {
+        console.error(err);
+        const raw = err && err.message ? err.message : String(err);
+        const looksLikeBlockedRequest = /failed to fetch|networkerror|load failed/i.test(raw);
+        const hint = looksLikeBlockedRequest
+          ? " This usually means one of: no internet connection right now, a browser extension (ad-blocker / privacy shield) blocking the request, or the page was opened as a local file instead of served over http/https (some browsers restrict that). Try pausing any ad-blocker, or test it once it's live on GitHub Pages."
+          : "";
+        showPlainMessage(
+          "Search failed",
+          `Couldn't reach OpenStreetMap's search after trying ${OVERPASS_ENDPOINTS.length} mirrors.${hint} (${raw})`
+        );
+      } finally {
+        goBtn.disabled = false;
+        goBtn.textContent = originalLabel;
+      }
+    });
+  </script>
+</body>
+</html>
