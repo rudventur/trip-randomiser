@@ -61,12 +61,20 @@
   }
 
   // ---------- Overpass ----------
+  // overpass.osm.ch was dropped: verified (via direct testing) that it
+  // returns a "successful" but permanently empty result set — even for a
+  // query that must always return data — so it could silently win the
+  // mirror race with garbage and make every search look empty.
   const OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter"
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ];
-  const OVERPASS_TIMEOUT_MS = 8000;
+  // The default query ORs together up to 4 broad tag categories, which
+  // measurably takes public Overpass mirrors 8-15s under normal load — too
+  // short a timeout here cuts off genuinely-working mirrors before they
+  // can ever answer.
+  const OVERPASS_TIMEOUT_MS = 12000;
 
   const CATEGORY_TAGS = {
     place: {
@@ -168,9 +176,12 @@
     "bbc.co.uk", "reuters.com", "apnews.com", "theguardian.com",
     "npr.org", "aljazeera.com", "dw.com"
   ];
-  const NEWS_TIMEOUT_MS = 9000;
-  const GEOCODE_TIMEOUT_MS = 8000;
-  const MAX_GEOCODE_TRIES = 4; // stay polite to Nominatim
+  const NEWS_TIMEOUT_MS = 12000;
+  const GEOCODE_TIMEOUT_MS = 7000;
+  // Capped low on purpose: each try is sequential (Overpass fail + GDELT +
+  // N geocode calls all stack up), so this bounds worst-case latency
+  // instead of letting a single click chain into a near-minute wait.
+  const MAX_GEOCODE_TRIES = 2;
 
   function buildNewsQuery(keyword) {
     const domainClause = "(" + NEWS_DOMAINS.map(d => `domain:${d}`).join(" OR ") + ")";
@@ -373,6 +384,7 @@
   // Public API
   global.TripSearchEngine = {
     fetchRandomTarget,
+    fetchNewsTarget,
     fetchWikipediaThumbnail,
     buildFunnyRoute,
     haversineKm,

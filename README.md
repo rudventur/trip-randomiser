@@ -1,10 +1,11 @@
 RudVentur – Feeling Lucky
 A single-file, no-build, vanilla HTML/CSS/JS "I'm Feeling Lucky" for real places. No curated list, no suggestions — every target comes from a live random search of OpenStreetMap data via the Overpass API, picked with a single uniform random draw across whatever the search turns up. If nothing local turns up, it falls back to a real, live headline from a free news site (BBC, Reuters, AP, The Guardian, NPR, Al Jazeera, DW — via GDELT's free news API) dropped on the map, with a deliberately silly "funny route" describing how you'd supposedly get there.
 What it does
-Three modes:
+Four modes:
 Lucky Place — real nearby places: cafés, parks, museums, bookshops, viewpoints, and so on.
 Lucky Event — real nearby venues where things happen: theatres, stadiums, nightclubs, theme parks. (There's no free public live-events API, so this is honestly "venue", not a scheduled event with a date.)
 Good Trip — both pools combined.
+📰 News — skips the OpenStreetMap search entirely and goes straight to a real, live headline from a free news site, geolocated live and placed on the map. It's the fast, always-available option: no map/GPS gate, no waiting on Overpass.
 Each mode also has a Present / Past / Future filter:
 Present — normal, currently-open places.
 Past — real `historic=*` tagged OpenStreetMap sites: ruins, monuments, memorials, former buildings.
@@ -14,7 +15,7 @@ The visible map is the real search area — pan, zoom, or drag the resize handle
 Hitting I'm Feeling Lucky builds an Overpass QL query for the current mode/filter and races it against three independent Overpass mirrors at once (first response wins, instead of trying them one at a time):
 `overpass-api.de`
 `overpass.kumi.systems`
-`overpass.osm.ch`
+`maps.mail.ru` (Overpass mirror — replaced `overpass.osm.ch`, which was confirmed dead: it answered every query with a "successful" but permanently empty result set)
 Every matching real place comes back, and one is picked with a single `Math.random()` draw — uniform, no weighting, no ranking.
 If nothing matches (or Overpass is unreachable/rate-limited), it falls back to a real, live news headline from a free news site (via GDELT's free news API), placed on the map at that story's reporting country. Still no fake data — a genuine "nothing found" is reported honestly if even that comes up empty.
 If you haven't set a start point or touched the map at all, it quietly tries a one-shot GPS lookup first — otherwise the default world view would search the middle of the ocean.
