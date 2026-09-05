@@ -96,6 +96,11 @@
     }
     .target-contact { font-size: 0.85rem; margin-top: 6px; }
     .target-contact a { color: var(--accent2); text-decoration: none; }
+    .target-gps { font-size: 0.85rem; color: var(--muted); margin-top: 6px; }
+    .target-gps a { color: var(--accent2); text-decoration: none; }
+    .target-photo { margin-top: 10px; }
+    .target-photo img { max-width: 100%; border-radius: 10px; display: block; }
+    .target-photo .photo-placeholder { color: var(--muted); font-size: 0.82rem; font-style: italic; }
     .mode-tag {
       display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 999px;
       font-size: 0.68rem; font-weight: 600; background: #2a2f3a; color: var(--accent2);
@@ -144,9 +149,18 @@
     <div class="field">
       <label>Start point</label>
       <div class="row">
-        <input type="text" id="start" placeholder="Type a place or use GPS / map" />
+        <input type="text" id="start" placeholder="Type a place or use GPS / map / random" />
         <button class="gps-btn" id="gpsBtn">Use my GPS</button>
         <button class="map-pick-btn" id="mapPickBtn">Pick on map</button>
+        <button class="map-pick-btn" id="startRandomBtn">🎲 Random</button>
+      </div>
+    </div>
+    <!-- Target keywords -->
+    <div class="field">
+      <label>Target search keywords (optional)</label>
+      <div class="row">
+        <input type="text" id="targetKeywords" placeholder="e.g. castle, waterfall, lighthouse — leave blank for fully random" />
+        <button class="map-pick-btn" id="keywordRandomBtn">🎲 Random</button>
       </div>
     </div>
     <!-- Time window -->
@@ -156,7 +170,21 @@
         <label style="display:flex;align-items:center;gap:6px;text-transform:none;color:var(--text);font-size:0.88rem;">
           <input type="checkbox" id="nowCheck" checked> Now
         </label>
-        <input type="date" id="datePick" disabled />
+        <input type="date" id="datePick" disabled placeholder="From" />
+        <span style="color:var(--muted);font-size:0.82rem;">to</span>
+        <input type="date" id="datePickEnd" disabled placeholder="To" />
+      </div>
+    </div>
+    <!-- Trip type -->
+    <div class="field">
+      <label>Trip type</label>
+      <div class="row">
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;color:var(--text);font-size:0.88rem;">
+          <input type="radio" name="tripType" id="tripReturn" checked> Return trip
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;text-transform:none;color:var(--text);font-size:0.88rem;">
+          <input type="radio" name="tripType" id="tripOneWay"> One-way
+        </label>
       </div>
     </div>
     <!-- Options -->
@@ -184,6 +212,8 @@
         <div class="target-label">Your Lucky Target</div>
         <div class="target-name" id="targetName"></div>
         <div class="target-desc" id="targetDesc"></div>
+        <div class="target-gps" id="targetGps"></div>
+        <div class="target-photo" id="targetPhoto"></div>
         <div class="countdown" id="countdown" style="display:none;"></div>
         <div class="target-contact" id="targetContact"></div>
         <div class="mode-tag" id="modeTag"></div>
@@ -240,14 +270,33 @@
       return table[sec] || table.present;
     }
 
-    function buildOverpassQuery(bbox, tagPairs) {
+    // A free-text keyword (from the "Target search keywords" field) overrides
+    // the category tag filters entirely and searches names directly — same
+    // "single random draw from whatever matches" principle, just scoped by
+    // text instead of OSM category.
+    function buildOverpassQuery(bbox, tagPairs, keyword) {
       const [s, w, n, e] = bbox;
-      const clauses = tagPairs.map(([k, v]) => {
-        const pattern = v === ".*" ? ".*" : `^(${v})$`;
-        return `nwr["${k}"~"${pattern}"](${s},${w},${n},${e});`;
-      }).join("\n");
+      let clauses;
+      if (keyword) {
+        const esc = keyword.replace(/[\\"[\]().*+?^${}|]/g, "\\$&");
+        clauses = `nwr["name"~"${esc}",i](${s},${w},${n},${e});`;
+      } else {
+        clauses = tagPairs.map(([k, v]) => {
+          const pattern = v === ".*" ? ".*" : `^(${v})$`;
+          return `nwr["${k}"~"${pattern}"](${s},${w},${n},${e});`;
+        }).join("\n");
+      }
       return `[out:json][timeout:25];(${clauses});out center 300;`;
     }
+
+    // A few fun search-term ideas for the keyword field's "Random" button —
+    // just inspiration to fill the box, not a suggested target.
+    const KEYWORD_IDEAS = [
+      "castle", "waterfall", "lighthouse", "cave", "bridge", "market",
+      "brewery", "vineyard", "island", "ruins", "garden", "tower",
+      "monastery", "windmill", "harbour", "canyon", "volcano", "lake",
+      "fortress", "abbey", "palace", "observatory", "aquarium", "mill"
+    ];
 
     // Several independent public Overpass mirrors — if one is down, rate
     // limited, or blocked for some reason, the next one is tried before
@@ -322,7 +371,37 @@
       const loc = locParts.length ? locParts.join(", ") : label;
       const link = tags.website || tags["contact:website"] ||
         (tags.wikipedia ? `https://en.wikipedia.org/wiki/${encodeURIComponent(tags.wikipedia.split(":").slice(1).join(":") || tags.wikipedia)}` : null);
-      return { name, loc, desc: `Found on OpenStreetMap · ${label}`, link };
+
+      // Closest available picture: prefer a direct "image" tag, then a
+      // Wikimedia Commons file tag (resolved via Special:FilePath, which
+      // works as a plain <img src> with no extra API call needed). If
+      // neither is on the element itself, we fall back to asking Wikipedia
+      // for its page thumbnail once we know the target (see
+      // fetchWikipediaThumbnail).
+      let photoUrl = null;
+      if (tags.image && /^https?:\/\//i.test(tags.image)) {
+        photoUrl = tags.image;
+      } else if (tags.wikimedia_commons && tags.wikimedia_commons.startsWith("File:")) {
+        photoUrl = `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(tags.wikimedia_commons.slice(5))}?width=500`;
+      }
+
+      return { name, loc, desc: `Found on OpenStreetMap · ${label}`, link, photoUrl, wikipedia: tags.wikipedia || null };
+    }
+
+    // Fallback when the OSM element has no photo tag of its own: ask
+    // Wikipedia's REST summary API (CORS-enabled) for its page thumbnail.
+    async function fetchWikipediaThumbnail(wikipediaTag) {
+      try {
+        const parts = wikipediaTag.split(":");
+        const lang = parts.length > 1 ? parts[0] : "en";
+        const title = parts.length > 1 ? parts.slice(1).join(":") : parts[0];
+        const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return (data.thumbnail && data.thumbnail.source) || null;
+      } catch {
+        return null;
+      }
     }
 
     function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
@@ -336,14 +415,14 @@
     // Fetch one random real target. If the current view has no matches, the
     // search area is automatically widened (zoomed out) a few times before
     // giving up — still no suggestions, just a bigger honest search.
-    async function fetchRandomTarget(mode, sec) {
+    async function fetchRandomTarget(mode, sec, keyword) {
       ensureSearchableZoom();
       const tagPairs = tagsFor(mode, sec);
       let widened = false;
       for (let attempt = 0; attempt < 4; attempt++) {
         const b = mainMap.getBounds();
         const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
-        const query = buildOverpassQuery(bbox, tagPairs);
+        const query = buildOverpassQuery(bbox, tagPairs, keyword);
         const data = await queryOverpass(query);
         const elements = (data.elements || []).filter(el => elCenter(el) !== null);
         if (elements.length > 0) {
@@ -406,9 +485,16 @@
         secFilter = btn.dataset.sec;
       });
     });
-    // Now checkbox
+    // Now checkbox — controls both ends of the time-span range
     document.getElementById("nowCheck").addEventListener("change", e => {
       document.getElementById("datePick").disabled = e.target.checked;
+      document.getElementById("datePickEnd").disabled = e.target.checked;
+    });
+
+    // Keyword "Random" — fills the field with an inspiration term, doesn't
+    // search anything itself. The actual search still runs on Feeling Lucky.
+    document.getElementById("keywordRandomBtn").addEventListener("click", () => {
+      document.getElementById("targetKeywords").value = pick(KEYWORD_IDEAS);
     });
 
     // Shared geolocation helper — used by the GPS button, and quietly by
@@ -450,11 +536,34 @@
       L.marker([startLatLon.lat, startLatLon.lon]).addTo(mainMap).bindPopup("Start").openPopup();
       pickingOnMap = false;
     });
+    // Random start point — a uniform random draw inside the current map view
+    // once you've panned/zoomed to an area, otherwise a uniform draw across
+    // the whole (non-polar) world, same "no suggestions, one random draw"
+    // principle as the target search itself.
+    document.getElementById("startRandomBtn").addEventListener("click", () => {
+      let lat, lon;
+      if (mapInteracted) {
+        const b = mainMap.getBounds();
+        lat = b.getSouth() + Math.random() * (b.getNorth() - b.getSouth());
+        lon = b.getWest() + Math.random() * (b.getEast() - b.getWest());
+      } else {
+        lat = -60 + Math.random() * 135;
+        lon = -180 + Math.random() * 360;
+        mainMap.setView([lat, lon], 6, { animate: false });
+        mapInteracted = true;
+      }
+      startLatLon = { lat, lon };
+      document.getElementById("start").value = `Random ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      L.marker([lat, lon]).addTo(mainMap).bindPopup("Random start").openPopup();
+    });
 
     // ========== HELPERS ==========
     function getTimeWindow() {
       if (document.getElementById("nowCheck").checked) return "now";
-      return document.getElementById("datePick").value || "now";
+      const from = document.getElementById("datePick").value;
+      const to = document.getElementById("datePickEnd").value;
+      if (from && to && to !== from) return `${from} → ${to}`;
+      return from || to || "now";
     }
     function estimateLeaveHours(target) {
       // Still a rough demo estimate (labelled as such in the UI) — separate
@@ -462,18 +571,21 @@
       if (luckyMode !== "both") return null;
       return 2 + Math.floor(Math.random() * 10); // 2–12 h for demo
     }
-    function buildRoute(startName, target) {
+    function buildRoute(startName, target, isReturn) {
       const stages = [];
       stages.push(`Leave from ${startName || "your current position"}`);
       stages.push("Walk or take local transport to the main hub");
       stages.push(`Travel toward ${target.loc}`);
       stages.push(`Arrive at ${target.name}`);
+      if (isReturn) stages.push(`Return journey back to ${startName || "your start point"}`);
       return stages;
     }
 
     function showPlainMessage(title, desc) {
       document.getElementById("targetName").textContent = title;
       document.getElementById("targetDesc").textContent = desc;
+      document.getElementById("targetGps").innerHTML = "";
+      document.getElementById("targetPhoto").innerHTML = "";
       document.getElementById("countdown").style.display = "none";
       document.getElementById("targetContact").innerHTML = "";
       document.getElementById("modeTag").textContent = "";
@@ -513,7 +625,8 @@
       document.getElementById("result").classList.remove("visible");
 
       try {
-        const found = await fetchRandomTarget(luckyMode, secFilter);
+        const keyword = document.getElementById("targetKeywords").value.trim();
+        const found = await fetchRandomTarget(luckyMode, secFilter, keyword);
         if (!found) {
           showPlainMessage(
             "No luck this time",
@@ -524,12 +637,39 @@
 
         const coords = elCenter(found.element);
         const info = describeElement(found.element);
-        const target = { name: info.name, loc: info.loc, lat: coords.lat, lon: coords.lon, desc: info.desc, link: info.link, type: secFilter };
+        const target = {
+          name: info.name, loc: info.loc, lat: coords.lat, lon: coords.lon,
+          desc: info.desc, link: info.link, type: secFilter,
+          photoUrl: info.photoUrl, wikipedia: info.wikipedia
+        };
+        const isReturn = document.getElementById("tripReturn").checked;
         const leaveHours = estimateLeaveHours(target);
 
         document.getElementById("routesTitle").style.display = "block";
         document.getElementById("targetName").textContent = target.name;
         document.getElementById("targetDesc").textContent = target.desc + (found.widened ? " — search area widened to find a match" : "");
+
+        // GPS location — plain coordinates plus a live link to view it on OSM.
+        document.getElementById("targetGps").innerHTML =
+          `📍 ${target.lat.toFixed(5)}, ${target.lon.toFixed(5)} · ` +
+          `<a href="https://www.openstreetmap.org/?mlat=${target.lat}&mlon=${target.lon}#map=17/${target.lat}/${target.lon}" target="_blank" rel="noopener">View on OSM →</a>`;
+
+        // Closest available picture — from the OSM element's own tags if it
+        // has one, otherwise a one-off lookup of its Wikipedia thumbnail.
+        const photoEl = document.getElementById("targetPhoto");
+        if (target.photoUrl) {
+          photoEl.innerHTML = `<img src="${target.photoUrl}" alt="${target.name}" loading="lazy" onerror="this.parentElement.innerHTML='<span class=&quot;photo-placeholder&quot;>No photo available</span>'">`;
+        } else if (target.wikipedia) {
+          photoEl.innerHTML = `<span class="photo-placeholder">Looking for a photo…</span>`;
+          fetchWikipediaThumbnail(target.wikipedia).then(url => {
+            photoEl.innerHTML = url
+              ? `<img src="${url}" alt="${target.name}" loading="lazy">`
+              : `<span class="photo-placeholder">No photo available</span>`;
+          });
+        } else {
+          photoEl.innerHTML = `<span class="photo-placeholder">No photo available</span>`;
+        }
+
         const cd = document.getElementById("countdown");
         if (leaveHours !== null) {
           cd.style.display = "block";
@@ -541,7 +681,8 @@
           ? `<a href="${target.link}" target="_blank" rel="noopener">More info →</a>`
           : "No extra link";
         document.getElementById("modeTag").textContent =
-          luckyMode.toUpperCase() + " • " + secFilter.toUpperCase() + " • " + getTimeWindow();
+          luckyMode.toUpperCase() + " • " + secFilter.toUpperCase() + " • " +
+          (isReturn ? "RETURN" : "ONE-WAY") + " • " + getTimeWindow();
 
         // Start coords
         let sLat = startLatLon ? startLatLon.lat : mainMap.getCenter().lat;
@@ -564,7 +705,7 @@
         const routesEl = document.getElementById("routes");
         routesEl.innerHTML = "";
         for (let i = 0; i < 2; i++) {
-          const stages = buildRoute(startText, target);
+          const stages = buildRoute(startText, target, isReturn);
           const div = document.createElement("div");
           div.className = "route";
           div.innerHTML = `
