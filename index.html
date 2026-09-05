@@ -132,6 +132,26 @@
     .stages li { position: relative; padding-left: 15px; margin-bottom: 5px; font-size: 0.87rem; }
     .stages li::before { content: "→"; position: absolute; left: 0; color: var(--accent2); font-weight: 700; }
     footer { text-align: center; margin-top: 30px; color: var(--muted); font-size: 0.72rem; }
+    /* Live weather ticker */
+    #weatherTicker {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 10px 14px; margin-bottom: 16px;
+    }
+    #weatherTicker summary {
+      cursor: pointer; font-weight: 700; font-size: 0.88rem; color: var(--text);
+      list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    #weatherTicker summary::-webkit-details-marker { display: none; }
+    #weatherTicker summary .wt-toggle { color: var(--muted); font-size: 0.75rem; }
+    #weatherStatus { color: var(--muted); font-size: 0.78rem; padding: 8px 0 2px; }
+    .wt-item { display: flex; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+    .wt-item img { width: 56px; height: 42px; object-fit: cover; border-radius: 6px; background: var(--bg); flex-shrink: 0; }
+    .wt-item .wt-body { min-width: 0; }
+    .wt-item h4 { font-size: 0.82rem; font-weight: 700; margin-bottom: 2px; line-height: 1.3; }
+    .wt-item h4 a { color: var(--text); text-decoration: none; }
+    .wt-item h4 a:hover { color: var(--accent2); }
+    .wt-item p { font-size: 0.72rem; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .wt-item .wt-meta { font-size: 0.65rem; color: var(--muted); opacity: 0.75; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -140,6 +160,13 @@
       <h1>RudVentur – Feeling Lucky</h1>
       <p class="subtitle">Lucky Place • Lucky Event • Good Trip — real random search, no suggestions</p>
     </header>
+
+    <!-- Live weather ticker -->
+    <details id="weatherTicker">
+      <summary>🌦️ Live Weather News <span class="wt-toggle">tap to expand</span></summary>
+      <div id="weatherStatus">Loading live feed…</div>
+      <div id="weatherItems"></div>
+    </details>
 
     <!-- Main Lucky modes -->
     <div class="lucky-row">
@@ -247,6 +274,115 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="search-engine.js"></script>
+  <script>
+    // ---- Live weather ticker (independent of the Lucky search engine) ----
+    // Renders RudVentur's "Weather News" RSS.app feed — real, live headlines,
+    // not curated — matching the site's "no fake data" philosophy. CORS is
+    // open on this feed, so a plain client-side fetch + DOMParser works.
+    (function () {
+      const WEATHER_FEED_URL = "https://rss.app/feeds/tRcMwW2Kz8Jl5nNn.xml";
+
+      function stripHtml(html) {
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+      }
+      function safeUrl(raw) {
+        try {
+          const u = new URL(raw, location.href);
+          return (u.protocol === "http:" || u.protocol === "https:") ? u.href : "";
+        } catch {
+          return "";
+        }
+      }
+      function timeAgo(dateStr) {
+        const d = new Date(dateStr);
+        if (isNaN(d)) return "";
+        const mins = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+        if (mins < 60) return mins + "m ago";
+        const hrs = Math.round(mins / 60);
+        if (hrs < 24) return hrs + "h ago";
+        return Math.round(hrs / 24) + "d ago";
+      }
+      function tagText(item, tag) {
+        const el = item.getElementsByTagName(tag)[0];
+        return el ? (el.textContent || "").trim() : "";
+      }
+
+      async function loadWeatherTicker() {
+        const statusEl = document.getElementById("weatherStatus");
+        const itemsEl = document.getElementById("weatherItems");
+        if (!statusEl || !itemsEl) return;
+        statusEl.style.display = "block";
+        statusEl.textContent = "Loading live feed…";
+        try {
+          const res = await fetch(WEATHER_FEED_URL, { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const xml = new DOMParser().parseFromString(await res.text(), "text/xml");
+          if (xml.querySelector("parsererror")) throw new Error("feed parse error");
+
+          const items = [...xml.getElementsByTagName("item")].slice(0, 6).map(item => {
+            const media = item.getElementsByTagName("media:content")[0];
+            return {
+              title: tagText(item, "title"),
+              link: safeUrl(tagText(item, "link")),
+              creator: tagText(item, "dc:creator"),
+              pubDate: tagText(item, "pubDate"),
+              snippet: stripHtml(tagText(item, "description")),
+              image: media ? safeUrl(media.getAttribute("url") || "") : ""
+            };
+          });
+
+          if (!items.length) {
+            statusEl.textContent = "No stories in the feed right now.";
+            return;
+          }
+          statusEl.style.display = "none";
+          itemsEl.innerHTML = "";
+          items.forEach(it => {
+            const row = document.createElement("div");
+            row.className = "wt-item";
+            if (it.image) {
+              const img = document.createElement("img");
+              img.src = it.image;
+              img.alt = "";
+              img.loading = "lazy";
+              img.addEventListener("error", () => img.remove());
+              row.appendChild(img);
+            }
+            const body = document.createElement("div");
+            body.className = "wt-body";
+            const h4 = document.createElement("h4");
+            if (it.link) {
+              const a = document.createElement("a");
+              a.href = it.link;
+              a.target = "_blank";
+              a.rel = "noopener";
+              a.textContent = it.title || "(untitled)";
+              h4.appendChild(a);
+            } else {
+              h4.textContent = it.title || "(untitled)";
+            }
+            const p = document.createElement("p");
+            p.textContent = it.snippet;
+            const meta = document.createElement("div");
+            meta.className = "wt-meta";
+            meta.textContent = [it.creator, timeAgo(it.pubDate)].filter(Boolean).join(" • ");
+            body.appendChild(h4);
+            body.appendChild(p);
+            body.appendChild(meta);
+            row.appendChild(body);
+            itemsEl.appendChild(row);
+          });
+        } catch (err) {
+          statusEl.style.display = "block";
+          statusEl.textContent = "Could not load the live feed (" + err.message + ").";
+        }
+      }
+
+      loadWeatherTicker();
+      setInterval(loadWeatherTicker, 5 * 60 * 1000);
+    })();
+  </script>
   <script>
     // ---- Startup guard: if a dependency is missing (wrong filename, blocked
     // CDN, opened as file:// ...) fail LOUDLY on the button instead of
