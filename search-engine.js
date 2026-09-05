@@ -20,12 +20,20 @@
   }
 
   // ---------- Overpass helpers ----------
+  // overpass.osm.ch was dropped: verified it returns a "successful" but
+  // permanently empty result set (even for node(1), which must always
+  // exist), so it could silently win the race with garbage and make every
+  // search look like it found nothing.
   const OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter"
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ];
-  const OVERPASS_TIMEOUT_MS = 8000;
+  // The default "place/present" query ORs together 4 broad tag categories
+  // in one call, which measurably takes public Overpass mirrors 8-15s under
+  // normal load — a short timeout here was cutting off genuinely-working
+  // mirrors before they could ever answer, not just skipping dead ones.
+  const OVERPASS_TIMEOUT_MS = 15000;
 
   const CATEGORY_TAGS = {
     place: {
@@ -139,7 +147,7 @@
     "bbc.co.uk", "reuters.com", "apnews.com", "theguardian.com",
     "npr.org", "aljazeera.com", "dw.com"
   ];
-  const NEWS_TIMEOUT_MS = 8000;
+  const NEWS_TIMEOUT_MS = 15000;
 
   // Rough country centroids so a real headline can be placed on the map
   // without an extra geocoding round trip (keeps the fallback fast).
@@ -355,6 +363,7 @@
   // Public API
   global.TripSearchEngine = {
     fetchRandomTarget,
+    fetchNewsTarget,
     fetchWikipediaThumbnail,
     buildFunnyRoute,
     haversineKm,
