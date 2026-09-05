@@ -22,7 +22,10 @@
     .subtitle { color: var(--muted); font-size: 0.88rem; margin-top: 3px; }
     /* Lucky buttons */
     .lucky-row {
-      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 16px;
+      display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-bottom: 16px;
+    }
+    @media (max-width: 480px) {
+      .lucky-row { grid-template-columns: 1fr 1fr; }
     }
     .lucky-btn {
       padding: 14px 8px; border-radius: 10px;
@@ -143,6 +146,7 @@
       <button class="lucky-btn active" data-lucky="place">Lucky Place</button>
       <button class="lucky-btn" data-lucky="event">Lucky Event</button>
       <button class="lucky-btn" data-lucky="both">Good Trip</button>
+      <button class="lucky-btn" data-lucky="news">📰 News</button>
     </div>
 
     <!-- Secondary filters -->
@@ -428,10 +432,10 @@
       const goBtn = document.getElementById("go");
       const startText = document.getElementById("start").value.trim();
 
-      // If the user hasn't set a start point or touched the map, try a quiet
-      // one-shot geolocation rather than silently searching the default
-      // world view (which is mid-ocean and will never return anything).
-      if (!mapInteracted && !startLatLon) {
+      // News mode doesn't depend on the visible map area at all, so it skips
+      // the start-point/GPS gate below — it's meant to be the fast, always-
+      // available option.
+      if (luckyMode !== "news" && !mapInteracted && !startLatLon) {
         goBtn.disabled = true;
         goBtn.textContent = "Locating…";
         setStatus("Locating you (silent GPS fix)…");
@@ -450,29 +454,13 @@
 
       goBtn.disabled = true;
       const originalLabel = goBtn.textContent;
-      goBtn.textContent = "Searching real places…";
+      goBtn.textContent = luckyMode === "news" ? "Fetching a real headline…" : "Searching real places…";
       document.getElementById("result").classList.remove("visible");
       setStatus("Starting live search…");
 
       try {
         const keyword = document.getElementById("targetKeywords").value.trim();
 
-        // fetchRandomTarget streams progress back through setStatus so the
-        // user can see exactly which live step it's on.
-        const found = await TripSearchEngine.fetchRandomTarget(
-          mainMap, luckyMode, secFilter, keyword, setStatus
-        );
-
-        if (!found) {
-          setStatus("");
-          showPlainMessage(
-            "No luck this time",
-            "No matching real places turned up nearby, and the live news fallback came up empty too. Try a different area, mode or filter."
-          );
-          return;
-        }
-
-        setStatus("");
         const target = found.target;
         const isReturn = document.getElementById("tripReturn").checked;
         const leaveHours = estimateLeaveHours(target);

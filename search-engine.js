@@ -53,20 +53,24 @@
   // ---------- Rate limiting (polite spacing for the free Overpass mirrors —
   // never blocks the user: inside the cooldown we just go straight to the
   // fresh-news fallback instead of making them wait) ----------
-  let lastOverpassCall = 0;
+let lastOverpassCall = 0;
   const MIN_INTERVAL_MS = 15000;
 
   function canCallOverpassNow() {
     return Date.now() - lastOverpassCall >= MIN_INTERVAL_MS;
   }
 
-  // ---------- Overpass ----------
+
   const OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter"
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ];
-  const OVERPASS_TIMEOUT_MS = 8000;
+  // The default "place/present" query ORs together 4 broad tag categories
+  // in one call, which measurably takes public Overpass mirrors 8-15s under
+  // normal load — a short timeout here was cutting off genuinely-working
+  // mirrors before they could ever answer, not just skipping dead ones.
+  const OVERPASS_TIMEOUT_MS = 15000;
 
   const CATEGORY_TAGS = {
     place: {
@@ -168,9 +172,7 @@
     "bbc.co.uk", "reuters.com", "apnews.com", "theguardian.com",
     "npr.org", "aljazeera.com", "dw.com"
   ];
-  const NEWS_TIMEOUT_MS = 9000;
-  const GEOCODE_TIMEOUT_MS = 8000;
-  const MAX_GEOCODE_TRIES = 4; // stay polite to Nominatim
+
 
   function buildNewsQuery(keyword) {
     const domainClause = "(" + NEWS_DOMAINS.map(d => `domain:${d}`).join(" OR ") + ")";
@@ -373,6 +375,7 @@
   // Public API
   global.TripSearchEngine = {
     fetchRandomTarget,
+    fetchNewsTarget,
     fetchWikipediaThumbnail,
     buildFunnyRoute,
     haversineKm,
