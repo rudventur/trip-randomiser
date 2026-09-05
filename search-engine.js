@@ -1,29 +1,66 @@
 // ==========================================================================
 // TripSearchEngine
-// 1. Try live Overpass first — all mirrors raced in parallel, first one back wins.
-// 2. If nothing found → fall back to real, live news headlines (free news
-//    sites, via GDELT's free API) placed on the map. No hardcoded/curated
-//    list of places — every result is live data.
-// Returns a target, or null if genuinely nothing turned up.
+// 1. Live Overpass search first — all mirrors raced in parallel, first one
+//    back wins. Every place comes straight from live OpenStreetMap data.
+// 2. If nothing found (or Overpass is unreachable / cooling down) → fetch
+//    FRESH live news headlines (GDELT, free & keyless) and geocode them on
+//    the fly with Nominatim so they land on the map at real coordinates.
+//    NO curated place data exists in this file — the old COUNTRY_CENTROIDS
+//    table is gone; every coordinate is resolved live.
+// Returns { target, widened } — or null if genuinely nothing turned up.
 // ==========================================================================
 (function (global) {
   "use strict";
 
+  // ---------- Safe JSON fetch ----------
+  // Free APIs often answer HTTP 200 with an HTML error page or an empty
+  // body (rate limits, bot filters). res.json() on that throws a confusing
+  // SyntaxError. Reading text first gives a clear, reportable error.
+  async function fetchJson(url, options = {}, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(`${new URL(url).host} answered with non-JSON (rate-limited or blocked?)`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // ---------- Promise.any replacement ----------
+  // Works in every browser (Promise.any needs ES2021) and, when all
+  // endpoints fail, reports every error instead of an empty AggregateError.
+  function firstSuccess(promises) {
+    return new Promise((resolve, reject) => {
+      let pending = promises.length;
+      if (pending === 0) return reject(new Error("no endpoints to try"));
+      const errors = [];
+      promises.forEach(p =>
+        Promise.resolve(p).then(resolve, err => {
+          errors.push(err && err.message ? err.message : String(err));
+          if (--pending === 0) reject(new Error(errors.join(" | ")));
+        })
+      );
+    });
+  }
+
   // ---------- Rate limiting (polite spacing for the free Overpass mirrors —
-  // never blocks the user: if we're inside the cooldown we just skip
-  // straight to the news fallback instead of making them wait) ----------
-  let lastOverpassCall = 0;
-  const MIN_INTERVAL_MS = 15000; // 15 seconds
+  // never blocks the user: inside the cooldown we just go straight to the
+  // fresh-news fallback instead of making them wait) ----------
+let lastOverpassCall = 0;
+  const MIN_INTERVAL_MS = 15000;
 
   function canCallOverpassNow() {
     return Date.now() - lastOverpassCall >= MIN_INTERVAL_MS;
   }
 
-  // ---------- Overpass helpers ----------
-  // overpass.osm.ch was dropped: verified it returns a "successful" but
-  // permanently empty result set (even for node(1), which must always
-  // exist), so it could silently win the race with garbage and make every
-  // search look like it found nothing.
+
   const OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -82,27 +119,14 @@
   }
 
   async function queryOverpassOnce(endpoint, query) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        body: "data=" + encodeURIComponent(query),
-        signal: controller.signal
-      });
-      if (!res.ok) throw new Error(`${endpoint} → ${res.status}`);
-      return await res.json();
-    } finally {
-      clearTimeout(timer);
-    }
+    return fetchJson(endpoint, {
+      method: "POST",
+      body: "data=" + encodeURIComponent(query)
+    }, OVERPASS_TIMEOUT_MS);
   }
 
-  // Race every mirror at once instead of trying them one after another with
-  // backoff delays in between — whichever responds first wins, and a slow
-  // or dead mirror no longer costs the user extra seconds.
   async function queryOverpassRace(query) {
-    const attempts = OVERPASS_ENDPOINTS.map(ep => queryOverpassOnce(ep, query));
-    return await Promise.any(attempts);
+    return firstSuccess(OVERPASS_ENDPOINTS.map(ep => queryOverpassOnce(ep, query)));
   }
 
   function elCenter(el) {
@@ -139,120 +163,102 @@
     };
   }
 
-  // ---------- Live news fallback (free news sites, via GDELT's free,
-  // keyless news API) — replaces the old hardcoded curated list. Every
-  // result here is a real, live headline linking back to the original
-  // article, dropped on the map at its reporting country's location. ----------
+  // ---------- Fresh-news fallback (NO curated coordinates) ----------
+  // Real, live headlines from free news sites via GDELT (keyless). Where the
+  // old version used a hardcoded country-centroid table to place stories,
+  // the location is now resolved at request time with Nominatim —
+  // OpenStreetMap's free geocoder — so any country works.
   const NEWS_DOMAINS = [
     "bbc.co.uk", "reuters.com", "apnews.com", "theguardian.com",
     "npr.org", "aljazeera.com", "dw.com"
   ];
-  const NEWS_TIMEOUT_MS = 15000;
 
-  // Rough country centroids so a real headline can be placed on the map
-  // without an extra geocoding round trip (keeps the fallback fast).
-  const COUNTRY_CENTROIDS = {
-    "united states": [39.8, -98.6], "canada": [56.1, -106.3], "mexico": [23.6, -102.6],
-    "united kingdom": [54.0, -2.9], "ireland": [53.4, -8.2], "france": [46.6, 2.2],
-    "germany": [51.2, 10.4], "spain": [40.0, -3.7], "portugal": [39.6, -8.0],
-    "italy": [42.8, 12.6], "netherlands": [52.2, 5.5], "belgium": [50.5, 4.5],
-    "switzerland": [46.8, 8.2], "austria": [47.5, 14.6], "sweden": [62.0, 15.0],
-    "norway": [64.6, 11.5], "denmark": [56.0, 9.5], "finland": [64.9, 26.0],
-    "iceland": [64.9, -19.0], "poland": [52.0, 19.1], "czech republic": [49.8, 15.5],
-    "slovakia": [48.7, 19.7], "hungary": [47.2, 19.5], "romania": [45.9, 24.9],
-    "bulgaria": [42.7, 25.5], "greece": [39.1, 21.8], "turkey": [39.0, 35.2],
-    "ukraine": [48.4, 31.2], "belarus": [53.7, 27.9], "russia": [61.5, 105.3],
-    "serbia": [44.0, 21.0], "croatia": [45.1, 15.2], "bosnia and herzegovina": [44.0, 17.7],
-    "slovenia": [46.1, 14.8], "albania": [41.2, 20.2], "north macedonia": [41.6, 21.7],
-    "moldova": [47.2, 28.5], "lithuania": [55.2, 23.9], "latvia": [56.9, 24.6],
-    "estonia": [58.6, 25.0], "georgia": [42.3, 43.4], "armenia": [40.1, 45.0],
-    "azerbaijan": [40.1, 47.6], "kazakhstan": [48.0, 66.9], "uzbekistan": [41.4, 64.6],
-    "china": [35.9, 104.2], "japan": [36.2, 138.3], "south korea": [35.9, 127.8],
-    "north korea": [40.3, 127.5], "taiwan": [23.7, 121.0], "hong kong": [22.3, 114.2],
-    "mongolia": [46.9, 103.8], "india": [22.4, 78.7], "pakistan": [30.4, 69.3],
-    "bangladesh": [23.7, 90.4], "sri lanka": [7.9, 80.8], "nepal": [28.4, 84.1],
-    "afghanistan": [33.9, 67.7], "iran": [32.4, 53.7], "iraq": [33.2, 43.7],
-    "syria": [34.8, 39.0], "lebanon": [33.9, 35.9], "israel": [31.0, 34.9],
-    "palestinian territories": [31.9, 35.2], "jordan": [30.6, 36.2], "saudi arabia": [24.0, 45.1],
-    "yemen": [15.6, 48.0], "united arab emirates": [23.4, 53.8], "qatar": [25.4, 51.2],
-    "kuwait": [29.3, 47.5], "oman": [21.5, 55.9], "indonesia": [-2.5, 118.0],
-    "philippines": [12.9, 121.8], "vietnam": [14.1, 108.3], "thailand": [15.9, 100.9],
-    "malaysia": [4.2, 101.9], "singapore": [1.35, 103.8], "myanmar": [21.9, 96.0],
-    "cambodia": [12.6, 105.0], "laos": [19.9, 102.5], "australia": [-25.3, 133.8],
-    "new zealand": [-41.0, 174.9], "papua new guinea": [-6.3, 143.9], "fiji": [-17.7, 178.1],
-    "brazil": [-10.3, -53.2], "argentina": [-35.4, -65.2], "chile": [-35.7, -71.5],
-    "colombia": [4.6, -74.3], "peru": [-9.2, -75.0], "venezuela": [7.1, -66.1],
-    "ecuador": [-1.8, -78.2], "bolivia": [-16.3, -63.6], "paraguay": [-23.4, -58.4],
-    "uruguay": [-32.5, -55.8], "cuba": [21.5, -79.5], "dominican republic": [18.9, -70.5],
-    "haiti": [19.0, -72.4], "jamaica": [18.1, -77.3], "panama": [8.5, -80.8],
-    "costa rica": [9.7, -83.8], "guatemala": [15.8, -90.2], "honduras": [15.2, -86.2],
-    "nicaragua": [12.9, -85.2], "trinidad and tobago": [10.7, -61.2],
-    "egypt": [26.8, 30.8], "libya": [26.3, 17.2], "tunisia": [33.9, 9.5],
-    "algeria": [28.0, 1.7], "morocco": [31.8, -7.1], "sudan": [15.6, 30.2],
-    "south sudan": [7.3, 30.3], "ethiopia": [9.1, 40.5], "kenya": [-0.0, 37.9],
-    "somalia": [5.2, 46.2], "tanzania": [-6.4, 34.9], "uganda": [1.4, 32.3],
-    "rwanda": [-1.9, 29.9], "nigeria": [9.1, 8.7], "ghana": [7.9, -1.0],
-    "ivory coast": [7.5, -5.5], "senegal": [14.5, -14.5], "cameroon": [3.8, 12.4],
-    "democratic republic of the congo": [-4.0, 21.8], "angola": [-11.2, 17.9],
-    "zambia": [-13.1, 27.8], "zimbabwe": [-19.0, 29.2], "mozambique": [-18.7, 35.5],
-    "south africa": [-30.6, 22.9], "namibia": [-22.9, 18.5], "botswana": [-22.3, 24.7]
-  };
-
-  function countryCentroid(name) {
-    if (!name) return null;
-    return COUNTRY_CENTROIDS[String(name).trim().toLowerCase()] || null;
-  }
 
   function buildNewsQuery(keyword) {
     const domainClause = "(" + NEWS_DOMAINS.map(d => `domain:${d}`).join(" OR ") + ")";
     return keyword ? `${domainClause} ${keyword}` : domainClause;
   }
 
-  async function fetchNewsTarget(keyword) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), NEWS_TIMEOUT_MS);
+  async function geocodeName(name) {
+    // Two live strategies: strict country lookup first, then free-text.
+    const urls = [
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&country=${encodeURIComponent(name)}`,
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(name)}`
+    ];
+    for (const url of urls) {
+      try {
+        const data = await fetchJson(url, {}, GEOCODE_TIMEOUT_MS);
+        if (Array.isArray(data) && data.length && data[0].lat != null && data[0].lon != null) {
+          return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+        }
+      } catch { /* try the next strategy */ }
+    }
+    return null;
+  }
+
+  async function fetchNewsTarget(keyword, onStatus) {
+    const say = m => { if (onStatus) onStatus(m); };
     try {
-      const q = encodeURIComponent(buildNewsQuery(keyword));
-      const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=artlist&maxrecords=30&timespan=3d&sort=hybridrel&format=json`;
-      const res = await fetch(url, { signal: controller.signal });
-      if (!res.ok) throw new Error(`GDELT news → ${res.status}`);
-      const data = await res.json();
-      const articles = data.articles || [];
-
-      const mappable = [];
-      for (const a of articles) {
-        const coords = countryCentroid(a.sourcecountry);
-        if (coords) mappable.push({ a, coords });
+      // With the keyword first; if that finds nothing, retry with no keyword
+      // so the fallback can always surface *some* fresh news.
+      const attempts = keyword ? [keyword, null] : [null];
+      let articles = [];
+      for (const kw of attempts) {
+        say("Fetching fresh headlines…");
+        try {
+          const q = encodeURIComponent(buildNewsQuery(kw));
+          const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=artlist&maxrecords=50&timespan=3d&sort=datedesc&format=json`;
+          const data = await fetchJson(url, {}, NEWS_TIMEOUT_MS);
+          articles = (data && data.articles) || [];
+        } catch (e) {
+          console.warn("GDELT attempt failed:", e && e.message);
+        }
+        if (articles.length) break;
       }
-      if (mappable.length === 0) return null;
+      if (!articles.length) return null;
 
-      const { a, coords } = mappable[Math.floor(Math.random() * mappable.length)];
-      // Small random spread so headlines from the same country don't all
-      // stack on exactly the same pixel.
-      const lat = Math.max(-85, Math.min(85, coords[0] + (Math.random() - 0.5) * 4));
-      const lon = coords[1] + (Math.random() - 0.5) * 4;
+      // Shuffle for the lucky factor, then geocode each story's country
+      // (deduped, capped) until one resolves to real coordinates.
+      const shuffled = articles.slice().sort(() => Math.random() - 0.5);
+      const tried = new Set();
+      let tries = 0;
 
-      return {
-        name: a.title || "Untitled story",
-        loc: a.sourcecountry || a.domain || "Somewhere out there",
-        lat, lon,
-        desc: `Live headline from ${a.domain || "a free news site"}`,
-        link: a.url || null,
-        photoUrl: /^https?:\/\//i.test(a.socialimage || "") ? a.socialimage : null,
-        source: "news"
-      };
+      for (const a of shuffled) {
+        if (tries >= MAX_GEOCODE_TRIES) break;
+        const where = a.sourcecountry && a.sourcecountry.trim();
+        if (!where || tried.has(where)) continue;
+        tried.add(where);
+        tries++;
+
+        say(`Placing fresh news on the map — locating ${where}…`);
+        const coords = await geocodeName(where);
+        if (!coords) continue;
+
+        const lat = Math.max(-85, Math.min(85, coords.lat + (Math.random() - 0.5) * 2));
+        const lon = coords.lon + (Math.random() - 0.5) * 2;
+
+        return {
+          name: a.title || "Untitled story",
+          loc: where,
+          lat, lon,
+          desc: `Live headline from ${a.domain || "a free news site"} · located just now via live geocoding (country-level)`,
+          link: a.url || null,
+          photoUrl: /^https?:\/\//i.test(a.socialimage || "") ? a.socialimage : null,
+          source: "news"
+        };
+      }
+      return null;
     } catch (err) {
       console.warn("News fallback unavailable:", err && err.message);
       return null;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
-  // ---------- Main function ----------
-  async function fetchRandomTarget(map, mode, sec, keyword) {
-    // 1. Try a fast, parallel live Overpass search first — skipped politely
-    // (never blocking the user) if we've called it too recently.
+  // ---------- Main ----------
+  async function fetchRandomTarget(map, mode, sec, keyword, onStatus) {
+    const say = m => { if (onStatus) onStatus(m); };
+
+    // 1. Live Overpass search inside the current map view.
     if (canCallOverpassNow()) {
       try {
         const b = map.getBounds();
@@ -260,6 +266,7 @@
         const tagPairs = tagsFor(mode, sec);
         lastOverpassCall = Date.now();
 
+        say("Searching OpenStreetMap live in this view…");
         const data = await queryOverpassRace(buildOverpassQuery(bbox, tagPairs, keyword, 35));
         const pool = [];
         for (const el of (data.elements || [])) {
@@ -267,18 +274,22 @@
           if (t) pool.push(t);
         }
         if (pool.length > 0) {
+          say("");
           return { target: pool[Math.floor(Math.random() * pool.length)], widened: false };
         }
+        say("Nothing matched in this view — falling back to fresh news…");
       } catch (err) {
-        console.warn("Live Overpass unavailable, trying real news instead:", err && err.message);
+        console.warn("Live Overpass unavailable, trying live news instead:", err && err.message);
+        say("OpenStreetMap unreachable — falling back to fresh news…");
       }
+    } else {
+      say("Overpass is cooling down — this click uses fresh news…");
     }
 
-    // 2. Fall back to real, live news headlines placed on the map. No
-    // hardcoded list — a genuine "nothing found" is reported honestly.
-    const newsTarget = await fetchNewsTarget(keyword);
+    // 2. Fresh live news, geolocated live. If this also comes up empty we
+    //    honestly report "no luck" instead of inventing anything.
+    const newsTarget = await fetchNewsTarget(keyword, onStatus);
     if (newsTarget) return { target: newsTarget, widened: true };
-
     return null;
   }
 
@@ -287,9 +298,10 @@
       const parts = wikipediaTag.split(":");
       const lang = parts.length > 1 ? parts[0] : "en";
       const title = parts.length > 1 ? parts.slice(1).join(":") : parts[0];
-      const res = await fetch(`https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
-      if (!res.ok) return null;
-      const data = await res.json();
+      const data = await fetchJson(
+        `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`,
+        {}, 8000
+      );
       return (data.thumbnail && data.thumbnail.source) || null;
     } catch {
       return null;
