@@ -156,16 +156,13 @@
       </div>
     </div>
     <!-- Target keywords -->
-<div class="field">
-  <label>Target search keywords (optional)</label>
-  <div class="row">
-    <input
-      type="text"
-      id="targetKeywords"
-      placeholder="Optional — leave blank for a completely random live result"
-    />
-  </div>
-</div>
+    <div class="field">
+      <label>Target search keywords (optional)</label>
+      <div class="row">
+        <input type="text" id="targetKeywords" placeholder="e.g. castle, waterfall, lighthouse — leave blank for fully random" />
+        <button class="map-pick-btn" id="keywordRandomBtn">🎲 Random</button>
+      </div>
+    </div>
     <!-- Time window -->
     <div class="field">
       <label>Time window</label>
@@ -206,12 +203,7 @@
         <div id="mainMap"></div>
         <div class="resize-handle" id="resizeHandle"></div>
       </div>
-<p class="map-hint">
-  This is the real search area — pan/zoom the map before hitting Lucky.
-  Targets come from live OpenStreetMap data inside the selected area.
-  If no usable place is found, RudVentur automatically fetches a fresh
-  news story and uses its reporting location as the fallback destination.
-</p>
+      <p class="map-hint">This is the real search area — pan/zoom the map (or use GPS / pick a point) before hitting Lucky. No curated list, ever: every target comes from a live OpenStreetMap search inside whatever the map is showing, or — if nothing local turns up — a real live headline from a free news site dropped on the map with a funny route to reach it.</p>
     </div>
     <button id="go">I’m Feeling Lucky</button>
     <!-- Result -->
@@ -229,9 +221,9 @@
       <div id="resultMap"></div>
       <div class="routes-title" id="routesTitle">Possible (funny) routes</div>
       <div id="routes"></div>
-<footer>
-  RudVentur Feeling Lucky • Live OpenStreetMap search with fresh-news fallback via GDELT • No curated destination list
-</footer>
+    </div>
+    <footer>RudVentur Feeling Lucky • Live random search via OpenStreetMap (Overpass API), with a live free-news fallback (GDELT) • Routes are deliberately funny; timing is still an estimate</footer>
+  </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="search-engine.js"></script>
   <script>
@@ -239,6 +231,7 @@
     // photo/GPS normalization) lives in search-engine.js as
     // window.TripSearchEngine — this script is just the UI: map/state,
     // form handling, and rendering whatever TripSearchEngine hands back.
+    const { pick, KEYWORD_IDEAS } = TripSearchEngine;
 
     // ========== STATE ==========
     let luckyMode = "place";
@@ -298,7 +291,10 @@
 
     // Keyword "Random" — fills the field with an inspiration term, doesn't
     // search anything itself. The actual search still runs on Feeling Lucky.
-   
+    document.getElementById("keywordRandomBtn").addEventListener("click", () => {
+      document.getElementById("targetKeywords").value = pick(KEYWORD_IDEAS);
+    });
+
     // Shared geolocation helper — used by the GPS button, and quietly by
     // "Feeling Lucky" itself if the user hasn't set a start point or touched
     // the map yet (so the search doesn't run against the default world view).
@@ -417,7 +413,7 @@
       document.getElementById("result").classList.remove("visible");
 
       try {
-      
+        const keyword = document.getElementById("targetKeywords").value.trim();
        const found = await TripSearchEngine.fetchRandomTarget(mainMap, luckyMode, secFilter, keyword);
 
 if (!found) {
