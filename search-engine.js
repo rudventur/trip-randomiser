@@ -1,58 +1,56 @@
 // ==========================================================================
-// TripSearchEngine — the "target search engine" for RudVentur Feeling Lucky.
-//
-// No curated suggestion lists. Every target is pulled live from two free,
-// key-less public data sources — OpenStreetMap (via the Overpass API) and
-// Wikidata (via its public SPARQL endpoint) — using whatever area the map
-// is currently showing as the real search region. Both sources' matches are
-// pooled together and one target is picked with a single uniform random
-// draw across the whole pool.
-//
-// Wikidata is a best-effort enrichment layer: it adds real target types OSM
-// doesn't cover well (festivals, planned events, historical events) but its
-// public endpoint can be slow or time out under load. A Wikidata failure or
-// timeout never fails the search — it just means that draw pulls from OSM
-// only, same as if Wikidata had genuinely found nothing nearby.
+// TripSearchEngine — more aggressive pure-live version
+// Goal: almost always return at least one real target from Overpass
 // ==========================================================================
 (function (global) {
   "use strict";
 
-  // ---------- OSM (Overpass) category tags ----------
-  // Each pair is [osmKey, valueAlternation]. "past" and "future" reuse real
-  // OSM concepts instead of inventing fake events/dates: historic=* for
-  // things that used to be here, construction=* for things that will exist
-  // here.
+  // Broader, simpler tags that actually return results in most areas
   const CATEGORY_TAGS = {
     place: {
       present: [
-        ["tourism", "attraction|viewpoint|museum|gallery|zoo|artwork|picnic_site"],
-        ["amenity", "cafe|restaurant|bar|pub|library|cinema|theatre|arts_centre|marketplace|place_of_worship|fountain"],
-        ["leisure", "park|garden|nature_reserve|beach_resort"],
-        ["shop", "books"],
-        ["natural", "beach|peak|water"]
+        ["tourism", "attraction|museum|viewpoint|artwork|gallery|zoo|picnic_site|hotel|hostel"],
+        ["amenity", "cafe|restaurant|bar|pub|library|cinema|theatre|place_of_worship|fountain|marketplace"],
+        ["leisure", "park|garden|nature_reserve|beach_resort|stadium"],
+        ["shop", "books|mall"],
+        ["natural", "beach|peak|water|cliff"]
       ],
-      past: [["historic", ".*"]],
-      future: [["building", "construction"], ["landuse", "construction"], ["construction", ".*"]]
+      past: [
+        ["historic", ".*"],
+        ["tourism", "attraction|museum"]
+      ],
+      future: [
+        ["building", "construction"],
+        ["landuse", "construction"],
+        ["construction", ".*"]
+      ]
     },
     event: {
       present: [
-        ["amenity", "nightclub|theatre|cinema|arts_centre|community_centre|conference_centre|events_venue|marketplace"],
+        ["amenity", "nightclub|theatre|cinema|arts_centre|community_centre|events_venue|marketplace"],
         ["leisure", "stadium|sports_centre|water_park"],
         ["tourism", "theme_park|attraction|zoo"]
       ],
       past: [["historic", ".*"]],
-      future: [["building", "construction"], ["landuse", "construction"], ["construction", ".*"]]
+      future: [
+        ["building", "construction"],
+        ["landuse", "construction"]
+      ]
     }
   };
 
-  // ---------- Wikidata classes (instance-of QIDs) ----------
-  // Deliberately small per bucket — a handful of QIDs keeps the SPARQL
-  // query fast (verified against the live endpoint); a long VALUES list
-  // over a dense city center reliably times out. "future" has no good
-  // Wikidata equivalent to OSM's construction=* tag, so it's OSM-only.
+  // Very broad last-resort tags – almost always finds something
+  const LAST_RESORT_TAGS = [
+    ["tourism", ".*"],
+    ["amenity", "cafe|restaurant|bar|pub|library|place_of_worship|theatre|cinema"],
+    ["leisure", "park|garden|stadium"],
+    ["historic", ".*"],
+    ["shop", "books"]
+  ];
+
   const WIKIDATA_CLASSES = {
     place: {
-      present: ["Q570116", "Q33506", "Q22698", "Q23413", "Q16560", "Q4989906"],
+      present: ["Q570116", "Q33506", "Q22698", "Q23413", "Q16560"],
       past: ["Q839954", "Q13418847"],
       future: []
     },
@@ -62,8 +60,15 @@
       future: []
     }
   };
-  const WIKIDATA_MAX_RADIUS_KM = 12;
-  const WIKIDATA_TIMEOUT_MS = 9000;
+
+  const OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter"
+  ];
+
+  const WIKIDATA_TIMEOUT_MS = 5500;
+  const OVERPASS_TIMEOUT_MS = 16000;
 
   function tagsFor(mode, sec) {
     if (mode === "both") {
@@ -75,54 +80,43 @@
     return table[sec] || table.present;
   }
 
-  function wikidataClassesFor(mode, sec) {
-    if (mode === "both") {
-      const p = WIKIDATA_CLASSES.place[sec] || [];
-      const e = WIKIDATA_CLASSES.event[sec] || [];
-      return [...new Set([...p, ...e])];
-    }
-    const table = WIKIDATA_CLASSES[mode] || WIKIDATA_CLASSES.place;
-    return table[sec] || [];
-  }
-
-  // Shared escaping for a keyword dropped into a double-quoted regex
-  // literal inside a query string (Overpass QL or SPARQL) — must not let
-  // the keyword break out of the quotes or the regex.
   function escapeForQuotedRegex(s) {
     return s.replace(/[\\"[\]().*+?^${}|]/g, "\\$&");
   }
 
-  // A keyword still respects the current mode/filter category — it narrows
-  // "real places of interest" (or events, or historic sites) by name,
-  // rather than replacing that constraint with a bare name search across
-  // every named thing on the map (street signs, building refs, etc).
-  function buildOverpassQuery(bbox, tagPairs, keyword) {
+  function buildOverpassQuery(bbox, tagPairs, keyword, limit = 60) {
     const [s, w, n, e] = bbox;
     const esc = keyword ? escapeForQuotedRegex(keyword) : null;
+
     const clauses = tagPairs.map(([k, v]) => {
       const pattern = v === ".*" ? ".*" : `^(${v})$`;
       const nameFilter = esc ? `["name"~"${esc}",i]` : "";
       return `nwr["${k}"~"${pattern}"]${nameFilter}(${s},${w},${n},${e});`;
     }).join("\n");
-    return `[out:json][timeout:25];(${clauses});out center 300;`;
+
+    return `[out:json][timeout:18];(${clauses});out center ${limit};`;
   }
 
-  const OVERPASS_ENDPOINTS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter"
-  ];
+  // Extremely broad query – last resort
+  function buildLastResortQuery(bbox) {
+    const [s, w, n, e] = bbox;
+    const clauses = LAST_RESORT_TAGS.map(([k, v]) => {
+      const pattern = v === ".*" ? ".*" : `^(${v})$`;
+      return `nwr["${k}"~"${pattern}"]["name"](${s},${w},${n},${e});`;
+    }).join("\n");
+    return `[out:json][timeout:15];(${clauses});out center 40;`;
+  }
 
   async function queryOverpassOnce(endpoint, query) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    const timer = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
     try {
       const res = await fetch(endpoint, {
         method: "POST",
         body: "data=" + encodeURIComponent(query),
         signal: controller.signal
       });
-      if (!res.ok) throw new Error(`${endpoint} responded ${res.status}`);
+      if (!res.ok) throw new Error(`${endpoint} → ${res.status}`);
       return await res.json();
     } finally {
       clearTimeout(timer);
@@ -131,21 +125,31 @@
 
   async function queryOverpass(query) {
     const errors = [];
-    for (const endpoint of OVERPASS_ENDPOINTS) {
+    // Shuffle mirrors a bit so we don't always hit the same one first
+    const endpoints = [...OVERPASS_ENDPOINTS].sort(() => Math.random() - 0.5);
+
+    for (const endpoint of endpoints) {
       try {
-        return await queryOverpassOnce(endpoint, query);
+        const data = await queryOverpassOnce(endpoint, query);
+        return data;
       } catch (err) {
-        errors.push(`${endpoint} → ${err && err.message ? err.message : err}`);
+        errors.push(err.message || String(err));
+        // small pause before next mirror
+        await new Promise(r => setTimeout(r, 280 + Math.random() * 200));
       }
     }
-    const combined = new Error(errors.join(" | "));
-    combined.allMirrorsFailed = true;
-    throw combined;
+    const e = new Error(errors.join(" | "));
+    e.allMirrorsFailed = true;
+    throw e;
   }
 
   function elCenter(el) {
-    if (typeof el.lat === "number" && typeof el.lon === "number") return { lat: el.lat, lon: el.lon };
-    if (el.center && typeof el.center.lat === "number") return { lat: el.center.lat, lon: el.center.lon };
+    if (typeof el.lat === "number" && typeof el.lon === "number") {
+      return { lat: el.lat, lon: el.lon };
+    }
+    if (el.center && typeof el.center.lat === "number") {
+      return { lat: el.center.lat, lon: el.center.lon };
+    }
     return null;
   }
 
@@ -163,28 +167,30 @@
 
   const CATEGORY_KEYS = ["tourism", "amenity", "leisure", "shop", "natural", "historic", "building", "landuse", "construction"];
 
-  // Normalizes a raw Overpass element into a plain, source-agnostic target.
   function describeOsmElement(el) {
     const tags = el.tags || {};
     const coords = elCenter(el);
+    if (!coords) return null;
+
     let matchedKey = null, matchedVal = null;
     for (const k of CATEGORY_KEYS) {
-      if (tags[k]) { matchedKey = k; matchedVal = tags[k]; break; }
+      if (tags[k]) {
+        matchedKey = k;
+        matchedVal = tags[k];
+        break;
+      }
     }
+
     const label = matchedKey ? categoryLabel(matchedKey, matchedVal) : "Place";
     const name = tags.name || `Unnamed ${label.toLowerCase()}`;
+
     const addrLine = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
     const addrCity = tags["addr:city"] || tags["addr:town"] || tags["addr:suburb"] || tags["addr:village"];
-    const locParts = [addrLine, addrCity].filter(Boolean);
-    const loc = locParts.length ? locParts.join(", ") : label;
-    const link = tags.website || tags["contact:website"] ||
-      (tags.wikipedia ? `https://en.wikipedia.org/wiki/${encodeURIComponent(tags.wikipedia.split(":").slice(1).join(":") || tags.wikipedia)}` : null);
+    const loc = [addrLine, addrCity].filter(Boolean).join(", ") || label;
 
-    // Closest available picture: prefer a direct "image" tag, then a
-    // Wikimedia Commons file tag (resolved via Special:FilePath, which
-    // works as a plain <img src> with no extra API call). Otherwise we
-    // fall back to a Wikipedia page thumbnail lookup (see
-    // fetchWikipediaThumbnail), once the caller knows the target.
+    const link = tags.website || tags["contact:website"] ||
+      (tags.wikipedia ? `https://en.wikipedia.org/wiki/${encodeURIComponent((tags.wikipedia.split(":")[1] || tags.wikipedia))}` : null);
+
     let photoUrl = null;
     if (tags.image && /^https?:\/\//i.test(tags.image)) {
       photoUrl = tags.image;
@@ -193,30 +199,40 @@
     }
 
     return {
-      name, loc, lat: coords.lat, lon: coords.lon,
+      name,
+      loc,
+      lat: coords.lat,
+      lon: coords.lon,
       desc: `Found on OpenStreetMap · ${label}`,
-      link, photoUrl, wikipedia: tags.wikipedia || null, source: "osm"
+      link,
+      photoUrl,
+      wikipedia: tags.wikipedia || null,
+      source: "osm"
     };
   }
 
-  // ---------- Wikidata ----------
+  // ---------- Wikidata (bonus only) ----------
   function bboxToCenterRadius(bbox) {
     const [s, w, n, e] = bbox;
-    const lat = (s + n) / 2, lon = (w + e) / 2;
+    const lat = (s + n) / 2;
+    const lon = (w + e) / 2;
     const kmPerDegLat = 111;
     const kmPerDegLon = 111 * Math.cos(lat * Math.PI / 180);
     const halfDiagKm = Math.sqrt(
-      ((n - s) * kmPerDegLat / 2) ** 2 + ((e - w) * kmPerDegLon / 2) ** 2
+      ((n - s) * kmPerDegLat / 2) ** 2 +
+      ((e - w) * kmPerDegLon / 2) ** 2
     );
-    const radius = Math.min(WIKIDATA_MAX_RADIUS_KM, Math.max(1, halfDiagKm));
+    const radius = Math.min(10, Math.max(1.5, halfDiagKm));
     return { lat, lon, radius };
   }
 
   function buildWikidataQuery(center, classQids, keyword) {
+    if (!classQids.length) return null;
     const valuesClause = classQids.map(q => `wd:${q}`).join(" ");
     const keywordClause = keyword
       ? `?item rdfs:label ?lbl . FILTER(LANG(?lbl)="en") FILTER(CONTAINS(LCASE(?lbl), "${escapeForQuotedRegex(keyword.toLowerCase())}"))`
       : "";
+
     return `SELECT ?item ?itemLabel ?coord ?classLabel ?image WHERE {
       SERVICE wikibase:around {
         ?item wdt:P625 ?coord .
@@ -228,12 +244,11 @@
       OPTIONAL { ?item wdt:P18 ?image . }
       ${keywordClause}
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-    } LIMIT 80`;
+    } LIMIT 40`;
   }
 
-  // Never throws — a Wikidata failure just means this draw has no Wikidata
-  // contribution, same as if it had genuinely found nothing nearby.
   async function queryWikidata(query) {
+    if (!query) return [];
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), WIKIDATA_TIMEOUT_MS);
     try {
@@ -255,39 +270,143 @@
   function describeWikidataBinding(b) {
     const m = /Point\(([-\d.]+) ([-\d.]+)\)/.exec(b.coord && b.coord.value);
     if (!m) return null;
-    const lon = parseFloat(m[1]), lat = parseFloat(m[2]);
+    const lon = parseFloat(m[1]);
+    const lat = parseFloat(m[2]);
     const qid = b.item.value.split("/").pop();
     const rawName = b.itemLabel && b.itemLabel.value;
     const label = b.classLabel ? humanizeTagValue(b.classLabel.value) : "Place";
     const name = (rawName && !/^Q\d+$/.test(rawName)) ? rawName : `Unnamed ${label.toLowerCase()}`;
-    const photoUrl = (b.image && b.image.value) ? `${b.image.value}?width=500` : null;
+    const photoUrl = (b.image && b.image.value) ? b.image.value + "?width=500" : null;
+
     return {
-      name, loc: label, lat, lon,
+      name,
+      loc: label,
+      lat,
+      lon,
       desc: `Found on Wikidata · ${label}`,
       link: `https://www.wikidata.org/wiki/${qid}`,
-      photoUrl, wikipedia: null, source: "wikidata", _qid: qid
+      photoUrl,
+      wikipedia: null,
+      source: "wikidata"
     };
   }
 
   async function fetchWikidataTargets(bbox, mode, sec, keyword) {
-    const classQids = wikidataClassesFor(mode, sec);
-    if (classQids.length === 0) return [];
+    const table = WIKIDATA_CLASSES[mode] || WIKIDATA_CLASSES.place;
+    const classQids = table[sec] || [];
+    if (!classQids.length) return [];
+
     const center = bboxToCenterRadius(bbox);
     const query = buildWikidataQuery(center, classQids, keyword);
     const bindings = await queryWikidata(query);
+
     const seen = new Set();
     const targets = [];
     for (const b of bindings) {
       const t = describeWikidataBinding(b);
-      if (!t || seen.has(t._qid)) continue;
-      seen.add(t._qid);
+      if (!t || seen.has(t.link)) continue;
+      seen.add(t.link);
       targets.push(t);
     }
     return targets;
   }
 
-  // Fallback photo lookup when an OSM element has no photo tag of its own:
-  // ask Wikipedia's REST summary API (CORS-enabled) for its page thumbnail.
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  function ensureSearchableZoom(map) {
+    if (map.getZoom() < 12) {
+      map.setView(map.getCenter(), 13, { animate: false });
+    }
+  }
+
+  // ---------- Main public function ----------
+  async function fetchRandomTarget(map, mode, sec, keyword) {
+    ensureSearchableZoom(map);
+
+    const tagPairs = tagsFor(mode, sec);
+    let widened = false;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const b = map.getBounds();
+      const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
+
+      // 1. Try normal query (with keyword if provided)
+      let pool = [];
+
+      try {
+        const osmData = await queryOverpass(buildOverpassQuery(bbox, tagPairs, keyword, 60));
+        for (const el of (osmData.elements || [])) {
+          const t = describeOsmElement(el);
+          if (t) pool.push(t);
+        }
+      } catch (err) {
+        console.warn("Overpass attempt failed:", err.message);
+      }
+
+      // 2. Soft keyword: if keyword was used and pool is empty → try again without keyword
+      if (keyword && pool.length === 0) {
+        try {
+          const osmData = await queryOverpass(buildOverpassQuery(bbox, tagPairs, null, 60));
+          for (const el of (osmData.elements || [])) {
+            const t = describeOsmElement(el);
+            if (t) pool.push(t);
+          }
+        } catch (err) {
+          console.warn("Overpass (no keyword) failed:", err.message);
+        }
+      }
+
+      // 3. Add Wikidata as pure bonus (never blocks)
+      try {
+        const wikiTargets = await fetchWikidataTargets(bbox, mode, sec, keyword);
+        pool.push(...wikiTargets);
+      } catch (_) {}
+
+      if (pool.length > 0) {
+        return { target: pick(pool), widened };
+      }
+
+      // 4. Last resort broad query on this bbox
+      try {
+        const lastData = await queryOverpass(buildLastResortQuery(bbox));
+        for (const el of (lastData.elements || [])) {
+          const t = describeOsmElement(el);
+          if (t) pool.push(t);
+        }
+        if (pool.length > 0) {
+          return { target: pick(pool), widened: true };
+        }
+      } catch (err) {
+        console.warn("Last-resort Overpass failed:", err.message);
+      }
+
+      // 5. Gentle widen – only 1 zoom level
+      widened = true;
+      const newZoom = Math.max(3, map.getZoom() - 1);
+      map.setView(map.getCenter(), newZoom, { animate: false });
+    }
+
+    // Absolute last chance – global-ish broad query around current center
+    try {
+      const b = map.getBounds();
+      const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
+      const lastData = await queryOverpass(buildLastResortQuery(bbox));
+      const pool = [];
+      for (const el of (lastData.elements || [])) {
+        const t = describeOsmElement(el);
+        if (t) pool.push(t);
+      }
+      if (pool.length > 0) {
+        return { target: pick(pool), widened: true };
+      }
+    } catch (_) {}
+
+    return null; // only if everything really failed
+  }
+
+  // Optional helper for photos
   async function fetchWikipediaThumbnail(wikipediaTag) {
     try {
       const parts = wikipediaTag.split(":");
@@ -302,71 +421,9 @@
     }
   }
 
-  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
-
-  const KEYWORD_IDEAS = [
-    "castle", "waterfall", "lighthouse", "cave", "bridge", "market",
-    "brewery", "vineyard", "island", "ruins", "garden", "tower",
-    "monastery", "windmill", "harbour", "canyon", "volcano", "lake",
-    "fortress", "abbey", "palace", "observatory", "aquarium", "mill",
-    "festival", "stadium", "museum"
-  ];
-
-  function ensureSearchableZoom(map) {
-    if (map.getZoom() < 11) {
-      map.setView(map.getCenter(), 13, { animate: false });
-    }
-  }
-
-  // Fetch one random real target from the combined OSM + Wikidata pool. If
-  // the current view has no matches, the search area is automatically
-  // widened (zoomed out) a few times before giving up — still no
-  // suggestions, just a bigger honest search.
-  async function fetchRandomTarget(map, mode, sec, keyword) {
-    ensureSearchableZoom(map);
-    const tagPairs = tagsFor(mode, sec);
-    let widened = false;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const b = map.getBounds();
-      const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
-
-      const [osmResult, wikidataTargets] = await Promise.allSettled([
-        queryOverpass(buildOverpassQuery(bbox, tagPairs, keyword)),
-        fetchWikidataTargets(bbox, mode, sec, keyword)
-      ]);
-
-      const pool = [];
-      if (osmResult.status === "fulfilled") {
-        for (const el of (osmResult.value.elements || [])) {
-          if (elCenter(el)) pool.push(describeOsmElement(el));
-        }
-      }
-      if (wikidataTargets.status === "fulfilled") {
-        pool.push(...wikidataTargets.value);
-      }
-
-      if (pool.length > 0) {
-        return { target: pick(pool), widened };
-      }
-
-      // Only a hard Overpass failure (all mirrors down) on the very first,
-      // un-widened attempt is worth surfacing — otherwise an empty pool
-      // just means "nothing here", and we keep widening.
-      if (osmResult.status === "rejected" && attempt === 0) {
-        throw osmResult.reason;
-      }
-
-      widened = true;
-      const z = Math.max(2, map.getZoom() - 3);
-      map.setView(map.getCenter(), z, { animate: false });
-    }
-    return null;
-  }
-
   global.TripSearchEngine = {
     fetchRandomTarget,
     fetchWikipediaThumbnail,
-    pick,
-    KEYWORD_IDEAS
+    pick
   };
 })(window);
