@@ -3,10 +3,9 @@
 // 1. Live Overpass search first — all mirrors raced in parallel, first one
 //    back wins. Every place comes straight from live OpenStreetMap data.
 // 2. If nothing found (or Overpass is unreachable / cooling down) → fetch
-//    FRESH live news headlines (GDELT, free & keyless) and geocode them on
-//    the fly with Nominatim so they land on the map at real coordinates.
-//    NO curated place data exists in this file — the old COUNTRY_CENTROIDS
-//    table is gone; every coordinate is resolved live.
+//    FRESH live news headlines from GDELT (free & keyless, no login),
+//    placed on the map via a local country-centroid table — a single HTTP
+//    request, no live geocoding chain to go wrong.
 // Returns { target, widened } — or null if genuinely nothing turned up.
 // ==========================================================================
 (function (global) {
@@ -163,42 +162,75 @@ let lastOverpassCall = 0;
     };
   }
 
-  // ---------- Fresh-news fallback (NO curated coordinates) ----------
-  // Real, live headlines from free news sites via GDELT (keyless). Where the
-  // old version used a hardcoded country-centroid table to place stories,
-  // the location is now resolved at request time with Nominatim —
-  // OpenStreetMap's free geocoder — so any country works.
+  // ---------- Fresh-news fallback ----------
+  // Real, live headlines from free news sites via GDELT (keyless, CORS-open,
+  // aggregates BBC/Reuters/AP/Guardian/NPR/Al Jazeera/DW). Stories are placed
+  // using a local country-centroid lookup table rather than a second live
+  // geocoding call — one HTTP request instead of a fragile multi-step chain,
+  // and nothing left that can silently rate-limit or time out on its own.
   const NEWS_DOMAINS = [
     "bbc.co.uk", "reuters.com", "apnews.com", "theguardian.com",
     "npr.org", "aljazeera.com", "dw.com"
   ];
   const NEWS_TIMEOUT_MS = 12000;
-  const GEOCODE_TIMEOUT_MS = 7000;
-  // Capped low on purpose: each try is sequential (GDELT + up to N geocode
-  // calls stack up), so this bounds worst-case latency instead of letting
-  // a single click chain into a near-minute wait.
-  const MAX_GEOCODE_TRIES = 2;
+
+  // Rough country centroids so a real headline can be placed on the map
+  // instantly, with no extra network round trip.
+  const COUNTRY_CENTROIDS = {
+    "united states": [39.8, -98.6], "canada": [56.1, -106.3], "mexico": [23.6, -102.6],
+    "united kingdom": [54.0, -2.9], "ireland": [53.4, -8.2], "france": [46.6, 2.2],
+    "germany": [51.2, 10.4], "spain": [40.0, -3.7], "portugal": [39.6, -8.0],
+    "italy": [42.8, 12.6], "netherlands": [52.2, 5.5], "belgium": [50.5, 4.5],
+    "switzerland": [46.8, 8.2], "austria": [47.5, 14.6], "sweden": [62.0, 15.0],
+    "norway": [64.6, 11.5], "denmark": [56.0, 9.5], "finland": [64.9, 26.0],
+    "iceland": [64.9, -19.0], "poland": [52.0, 19.1], "czech republic": [49.8, 15.5],
+    "slovakia": [48.7, 19.7], "hungary": [47.2, 19.5], "romania": [45.9, 24.9],
+    "bulgaria": [42.7, 25.5], "greece": [39.1, 21.8], "turkey": [39.0, 35.2],
+    "ukraine": [48.4, 31.2], "belarus": [53.7, 27.9], "russia": [61.5, 105.3],
+    "serbia": [44.0, 21.0], "croatia": [45.1, 15.2], "bosnia and herzegovina": [44.0, 17.7],
+    "slovenia": [46.1, 14.8], "albania": [41.2, 20.2], "north macedonia": [41.6, 21.7],
+    "moldova": [47.2, 28.5], "lithuania": [55.2, 23.9], "latvia": [56.9, 24.6],
+    "estonia": [58.6, 25.0], "georgia": [42.3, 43.4], "armenia": [40.1, 45.0],
+    "azerbaijan": [40.1, 47.6], "kazakhstan": [48.0, 66.9], "uzbekistan": [41.4, 64.6],
+    "china": [35.9, 104.2], "japan": [36.2, 138.3], "south korea": [35.9, 127.8],
+    "north korea": [40.3, 127.5], "taiwan": [23.7, 121.0], "hong kong": [22.3, 114.2],
+    "mongolia": [46.9, 103.8], "india": [22.4, 78.7], "pakistan": [30.4, 69.3],
+    "bangladesh": [23.7, 90.4], "sri lanka": [7.9, 80.8], "nepal": [28.4, 84.1],
+    "afghanistan": [33.9, 67.7], "iran": [32.4, 53.7], "iraq": [33.2, 43.7],
+    "syria": [34.8, 39.0], "lebanon": [33.9, 35.9], "israel": [31.0, 34.9],
+    "palestinian territories": [31.9, 35.2], "jordan": [30.6, 36.2], "saudi arabia": [24.0, 45.1],
+    "yemen": [15.6, 48.0], "united arab emirates": [23.4, 53.8], "qatar": [25.4, 51.2],
+    "kuwait": [29.3, 47.5], "oman": [21.5, 55.9], "indonesia": [-2.5, 118.0],
+    "philippines": [12.9, 121.8], "vietnam": [14.1, 108.3], "thailand": [15.9, 100.9],
+    "malaysia": [4.2, 101.9], "singapore": [1.35, 103.8], "myanmar": [21.9, 96.0],
+    "cambodia": [12.6, 105.0], "laos": [19.9, 102.5], "australia": [-25.3, 133.8],
+    "new zealand": [-41.0, 174.9], "papua new guinea": [-6.3, 143.9], "fiji": [-17.7, 178.1],
+    "brazil": [-10.3, -53.2], "argentina": [-35.4, -65.2], "chile": [-35.7, -71.5],
+    "colombia": [4.6, -74.3], "peru": [-9.2, -75.0], "venezuela": [7.1, -66.1],
+    "ecuador": [-1.8, -78.2], "bolivia": [-16.3, -63.6], "paraguay": [-23.4, -58.4],
+    "uruguay": [-32.5, -55.8], "cuba": [21.5, -79.5], "dominican republic": [18.9, -70.5],
+    "haiti": [19.0, -72.4], "jamaica": [18.1, -77.3], "panama": [8.5, -80.8],
+    "costa rica": [9.7, -83.8], "guatemala": [15.8, -90.2], "honduras": [15.2, -86.2],
+    "nicaragua": [12.9, -85.2], "trinidad and tobago": [10.7, -61.2],
+    "egypt": [26.8, 30.8], "libya": [26.3, 17.2], "tunisia": [33.9, 9.5],
+    "algeria": [28.0, 1.7], "morocco": [31.8, -7.1], "sudan": [15.6, 30.2],
+    "south sudan": [7.3, 30.3], "ethiopia": [9.1, 40.5], "kenya": [-0.0, 37.9],
+    "somalia": [5.2, 46.2], "tanzania": [-6.4, 34.9], "uganda": [1.4, 32.3],
+    "rwanda": [-1.9, 29.9], "nigeria": [9.1, 8.7], "ghana": [7.9, -1.0],
+    "ivory coast": [7.5, -5.5], "senegal": [14.5, -14.5], "cameroon": [3.8, 12.4],
+    "democratic republic of the congo": [-4.0, 21.8], "angola": [-11.2, 17.9],
+    "zambia": [-13.1, 27.8], "zimbabwe": [-19.0, 29.2], "mozambique": [-18.7, 35.5],
+    "south africa": [-30.6, 22.9], "namibia": [-22.9, 18.5], "botswana": [-22.3, 24.7]
+  };
+
+  function countryCentroid(name) {
+    if (!name) return null;
+    return COUNTRY_CENTROIDS[String(name).trim().toLowerCase()] || null;
+  }
 
   function buildNewsQuery(keyword) {
     const domainClause = "(" + NEWS_DOMAINS.map(d => `domain:${d}`).join(" OR ") + ")";
     return keyword ? `${domainClause} ${keyword}` : domainClause;
-  }
-
-  async function geocodeName(name) {
-    // Two live strategies: strict country lookup first, then free-text.
-    const urls = [
-      `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&country=${encodeURIComponent(name)}`,
-      `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(name)}`
-    ];
-    for (const url of urls) {
-      try {
-        const data = await fetchJson(url, {}, GEOCODE_TIMEOUT_MS);
-        if (Array.isArray(data) && data.length && data[0].lat != null && data[0].lon != null) {
-          return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-        }
-      } catch { /* try the next strategy */ }
-    }
-    return null;
   }
 
   async function fetchNewsTarget(keyword, onStatus) {
@@ -222,37 +254,30 @@ let lastOverpassCall = 0;
       }
       if (!articles.length) return null;
 
-      // Shuffle for the lucky factor, then geocode each story's country
-      // (deduped, capped) until one resolves to real coordinates.
-      const shuffled = articles.slice().sort(() => Math.random() - 0.5);
-      const tried = new Set();
-      let tries = 0;
-
-      for (const a of shuffled) {
-        if (tries >= MAX_GEOCODE_TRIES) break;
-        const where = a.sourcecountry && a.sourcecountry.trim();
-        if (!where || tried.has(where)) continue;
-        tried.add(where);
-        tries++;
-
-        say(`Placing fresh news on the map — locating ${where}…`);
-        const coords = await geocodeName(where);
-        if (!coords) continue;
-
-        const lat = Math.max(-85, Math.min(85, coords.lat + (Math.random() - 0.5) * 2));
-        const lon = coords.lon + (Math.random() - 0.5) * 2;
-
-        return {
-          name: a.title || "Untitled story",
-          loc: where,
-          lat, lon,
-          desc: `Live headline from ${a.domain || "a free news site"} · located just now via live geocoding (country-level)`,
-          link: a.url || null,
-          photoUrl: /^https?:\/\//i.test(a.socialimage || "") ? a.socialimage : null,
-          source: "news"
-        };
+      // Only keep stories whose country resolves in the local table, then
+      // pick one uniformly at random — no live geocoding, no extra request.
+      const mappable = [];
+      for (const a of articles) {
+        const coords = countryCentroid(a.sourcecountry);
+        if (coords) mappable.push({ a, coords });
       }
-      return null;
+      if (mappable.length === 0) return null;
+
+      const { a, coords } = mappable[Math.floor(Math.random() * mappable.length)];
+      // Small random spread so headlines from the same country don't all
+      // stack on exactly the same pixel.
+      const lat = Math.max(-85, Math.min(85, coords[0] + (Math.random() - 0.5) * 4));
+      const lon = coords[1] + (Math.random() - 0.5) * 4;
+
+      return {
+        name: a.title || "Untitled story",
+        loc: a.sourcecountry || a.domain || "Somewhere out there",
+        lat, lon,
+        desc: `Live headline from ${a.domain || "a free news site"}`,
+        link: a.url || null,
+        photoUrl: /^https?:\/\//i.test(a.socialimage || "") ? a.socialimage : null,
+        source: "news"
+      };
     } catch (err) {
       console.warn("News fallback unavailable:", err && err.message);
       return null;
