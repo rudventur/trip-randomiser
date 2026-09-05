@@ -172,7 +172,12 @@ let lastOverpassCall = 0;
     "bbc.co.uk", "reuters.com", "apnews.com", "theguardian.com",
     "npr.org", "aljazeera.com", "dw.com"
   ];
-
+  const NEWS_TIMEOUT_MS = 12000;
+  const GEOCODE_TIMEOUT_MS = 7000;
+  // Capped low on purpose: each try is sequential (GDELT + up to N geocode
+  // calls stack up), so this bounds worst-case latency instead of letting
+  // a single click chain into a near-minute wait.
+  const MAX_GEOCODE_TRIES = 2;
 
   function buildNewsQuery(keyword) {
     const domainClause = "(" + NEWS_DOMAINS.map(d => `domain:${d}`).join(" OR ") + ")";
