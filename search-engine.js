@@ -1,19 +1,29 @@
 // ==========================================================================
-// TripSearchEngine — more aggressive pure-live version
-// Goal: almost always return at least one real target from Overpass
+// TripSearchEngine — pure live version (Overpass + Wikidata)
+// Option 2: no curated lists, strong rate limiting
 // ==========================================================================
 (function (global) {
   "use strict";
 
-  // Broader, simpler tags that actually return results in most areas
+  // ---------- Rate limiting ----------
+  let lastOverpassCall = 0;
+  const MIN_INTERVAL_MS = 45000; // 45 seconds between any Overpass calls
+
+  function getSecondsUntilNextAllowed() {
+    const elapsed = Date.now() - lastOverpassCall;
+    const remaining = Math.ceil((MIN_INTERVAL_MS - elapsed) / 1000);
+    return remaining > 0 ? remaining : 0;
+  }
+
+  // ---------- Category tags (kept simple) ----------
   const CATEGORY_TAGS = {
     place: {
       present: [
-        ["tourism", "attraction|museum|viewpoint|artwork|gallery|zoo|picnic_site|hotel|hostel"],
-        ["amenity", "cafe|restaurant|bar|pub|library|cinema|theatre|place_of_worship|fountain|marketplace"],
+        ["tourism", "attraction|museum|viewpoint|artwork|gallery|zoo|picnic_site"],
+        ["amenity", "cafe|restaurant|bar|pub|library|cinema|theatre|place_of_worship|marketplace|fountain"],
         ["leisure", "park|garden|nature_reserve|beach_resort|stadium"],
-        ["shop", "books|mall"],
-        ["natural", "beach|peak|water|cliff"]
+        ["shop", "books"],
+        ["natural", "beach|peak|water"]
       ],
       past: [
         ["historic", ".*"],
@@ -39,10 +49,10 @@
     }
   };
 
-  // Very broad last-resort tags – almost always finds something
+  // Very broad last-resort tags
   const LAST_RESORT_TAGS = [
     ["tourism", ".*"],
-    ["amenity", "cafe|restaurant|bar|pub|library|place_of_worship|theatre|cinema"],
+    ["amenity", "cafe|restaurant|bar|pub|library|theatre|cinema|place_of_worship"],
     ["leisure", "park|garden|stadium"],
     ["historic", ".*"],
     ["shop", "books"]
@@ -67,7 +77,7 @@
     "https://overpass.osm.ch/api/interpreter"
   ];
 
-  const WIKIDATA_TIMEOUT_MS = 5500;
+  const WIKIDATA_TIMEOUT_MS = 5000;
   const OVERPASS_TIMEOUT_MS = 16000;
 
   function tagsFor(mode, sec) {
@@ -84,7 +94,7 @@
     return s.replace(/[\\"[\]().*+?^${}|]/g, "\\$&");
   }
 
-  function buildOverpassQuery(bbox, tagPairs, keyword, limit = 60) {
+  function buildOverpassQuery(bbox, tagPairs, keyword, limit = 40) {
     const [s, w, n, e] = bbox;
     const esc = keyword ? escapeForQuotedRegex(keyword) : null;
 
@@ -97,14 +107,13 @@
     return `[out:json][timeout:18];(${clauses});out center ${limit};`;
   }
 
-  // Extremely broad query – last resort
   function buildLastResortQuery(bbox) {
     const [s, w, n, e] = bbox;
     const clauses = LAST_RESORT_TAGS.map(([k, v]) => {
       const pattern = v === ".*" ? ".*" : `^(${v})$`;
       return `nwr["${k}"~"${pattern}"]["name"](${s},${w},${n},${e});`;
     }).join("\n");
-    return `[out:json][timeout:15];(${clauses});out center 40;`;
+    return `[out:json][timeout:15];(${clauses});out center 30;`;
   }
 
   async function queryOverpassOnce(endpoint, query) {
@@ -124,8 +133,18 @@
   }
 
   async function queryOverpass(query) {
+    // Enforce rate limit
+    const waitSec = getSecondsUntilNextAllowed();
+    if (waitSec > 0) {
+      const err = new Error(`Rate limited – please wait ${waitSec} seconds`);
+      err.rateLimited = true;
+      err.waitSeconds = waitSec;
+      throw err;
+    }
+
+    lastOverpassCall = Date.now();
+
     const errors = [];
-    // Shuffle mirrors a bit so we don't always hit the same one first
     const endpoints = [...OVERPASS_ENDPOINTS].sort(() => Math.random() - 0.5);
 
     for (const endpoint of endpoints) {
@@ -133,11 +152,18 @@
         const data = await queryOverpassOnce(endpoint, query);
         return data;
       } catch (err) {
-        errors.push(err.message || String(err));
-        // small pause before next mirror
-        await new Promise(r => setTimeout(r, 280 + Math.random() * 200));
+        const msg = err.message || String(err);
+        errors.push(msg);
+
+        if (msg.includes("429") || msg.includes("Too Many")) {
+          // Longer pause after a real 429
+          await new Promise(r => setTimeout(r, 8000 + Math.random() * 4000));
+        } else {
+          await new Promise(r => setTimeout(r, 700 + Math.random() * 500));
+        }
       }
     }
+
     const e = new Error(errors.join(" | "));
     e.allMirrorsFailed = true;
     throw e;
@@ -222,7 +248,7 @@
       ((n - s) * kmPerDegLat / 2) ** 2 +
       ((e - w) * kmPerDegLon / 2) ** 2
     );
-    const radius = Math.min(10, Math.max(1.5, halfDiagKm));
+    const radius = Math.min(9, Math.max(1.5, halfDiagKm));
     return { lat, lon, radius };
   }
 
@@ -244,7 +270,7 @@
       OPTIONAL { ?item wdt:P18 ?image . }
       ${keywordClause}
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-    } LIMIT 40`;
+    } LIMIT 30`;
   }
 
   async function queryWikidata(query) {
@@ -315,6 +341,14 @@
     return arr[Math.floor(Math.random() * arr.length)];
   }
 
+  const KEYWORD_IDEAS = [
+    "castle", "waterfall", "lighthouse", "cave", "bridge", "market",
+    "brewery", "vineyard", "island", "ruins", "garden", "tower",
+    "monastery", "windmill", "harbour", "canyon", "volcano", "lake",
+    "fortress", "abbey", "palace", "observatory", "aquarium", "mill",
+    "festival", "stadium", "museum", "library", "park", "beach"
+  ];
+
   function ensureSearchableZoom(map) {
     if (map.getZoom() < 12) {
       map.setView(map.getCenter(), 13, { animate: false });
@@ -323,6 +357,16 @@
 
   // ---------- Main public function ----------
   async function fetchRandomTarget(map, mode, sec, keyword) {
+    // Rate limit check first
+    const waitSec = getSecondsUntilNextAllowed();
+    if (waitSec > 0) {
+      return {
+        rateLimited: true,
+        waitSeconds: waitSec,
+        message: `Please wait ${waitSec} seconds before searching again`
+      };
+    }
+
     ensureSearchableZoom(map);
 
     const tagPairs = tagsFor(mode, sec);
@@ -332,33 +376,38 @@
       const b = map.getBounds();
       const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
 
-      // 1. Try normal query (with keyword if provided)
       let pool = [];
 
+      // 1. Normal query
       try {
-        const osmData = await queryOverpass(buildOverpassQuery(bbox, tagPairs, keyword, 60));
+        const osmData = await queryOverpass(buildOverpassQuery(bbox, tagPairs, keyword, 40));
         for (const el of (osmData.elements || [])) {
           const t = describeOsmElement(el);
           if (t) pool.push(t);
         }
       } catch (err) {
-        console.warn("Overpass attempt failed:", err.message);
+        if (err.rateLimited) {
+          return { rateLimited: true, waitSeconds: err.waitSeconds, message: err.message };
+        }
+        console.warn("Overpass failed:", err.message);
       }
 
-      // 2. Soft keyword: if keyword was used and pool is empty → try again without keyword
+      // 2. Soft keyword fallback
       if (keyword && pool.length === 0) {
         try {
-          const osmData = await queryOverpass(buildOverpassQuery(bbox, tagPairs, null, 60));
+          const osmData = await queryOverpass(buildOverpassQuery(bbox, tagPairs, null, 40));
           for (const el of (osmData.elements || [])) {
             const t = describeOsmElement(el);
             if (t) pool.push(t);
           }
         } catch (err) {
-          console.warn("Overpass (no keyword) failed:", err.message);
+          if (err.rateLimited) {
+            return { rateLimited: true, waitSeconds: err.waitSeconds, message: err.message };
+          }
         }
       }
 
-      // 3. Add Wikidata as pure bonus (never blocks)
+      // 3. Wikidata bonus
       try {
         const wikiTargets = await fetchWikidataTargets(bbox, mode, sec, keyword);
         pool.push(...wikiTargets);
@@ -368,7 +417,7 @@
         return { target: pick(pool), widened };
       }
 
-      // 4. Last resort broad query on this bbox
+      // 4. Last resort
       try {
         const lastData = await queryOverpass(buildLastResortQuery(bbox));
         for (const el of (lastData.elements || [])) {
@@ -379,34 +428,20 @@
           return { target: pick(pool), widened: true };
         }
       } catch (err) {
-        console.warn("Last-resort Overpass failed:", err.message);
+        if (err.rateLimited) {
+          return { rateLimited: true, waitSeconds: err.waitSeconds, message: err.message };
+        }
       }
 
-      // 5. Gentle widen – only 1 zoom level
+      // 5. Gentle widen
       widened = true;
       const newZoom = Math.max(3, map.getZoom() - 1);
       map.setView(map.getCenter(), newZoom, { animate: false });
     }
 
-    // Absolute last chance – global-ish broad query around current center
-    try {
-      const b = map.getBounds();
-      const bbox = [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];
-      const lastData = await queryOverpass(buildLastResortQuery(bbox));
-      const pool = [];
-      for (const el of (lastData.elements || [])) {
-        const t = describeOsmElement(el);
-        if (t) pool.push(t);
-      }
-      if (pool.length > 0) {
-        return { target: pick(pool), widened: true };
-      }
-    } catch (_) {}
-
-    return null; // only if everything really failed
+    return null;
   }
 
-  // Optional helper for photos
   async function fetchWikipediaThumbnail(wikipediaTag) {
     try {
       const parts = wikipediaTag.split(":");
@@ -421,9 +456,12 @@
     }
   }
 
+  // Public API
   global.TripSearchEngine = {
     fetchRandomTarget,
     fetchWikipediaThumbnail,
-    pick
+    pick,
+    KEYWORD_IDEAS,
+    getSecondsUntilNextAllowed   // useful for the UI timer
   };
 })(window);
